@@ -66,6 +66,7 @@ Workbook sheets: Cover, Master Data – Energy & SFC Calc, SFC Executive, Draw D
 CLAUDE.md                              this file
 docs/01_methodology.md                 full approach (baseline → diagnostics → ML → optimization → trial)
 docs/02_plant_team_data_request.md     questionnaire / data request for the plant team
+docs/03_plant_meeting_questions.md     meeting guide: questions with "why" and "listen for"
 data/raw/                              client files exactly as received (never edit in place)
 data/raw/README.md                     expected files, naming, column formats
 ```
