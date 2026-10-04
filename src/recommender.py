@@ -234,3 +234,89 @@ def simulate_policy(hh: pd.DataFrame, step: pd.Series, policy) -> pd.DataFrame:
     res["bb_rec"] = out_b
     res["mb3_sim"] = out_m
     return res
+
+
+# ----------------------------------------------------------------- final recommender (live use)
+class FinalRecommender:
+    """Both recommenders trained on all usable history, with historical limits.
+
+    fit(d, q, h)  -> trains the gas target model, air target, MB3 gain and limits.
+    recommend(inputs) -> NG, secondary air, AFR (per 15 min) and barrier boost (next hour),
+                         every value checked against the historical P1-P99 limits.
+    """
+
+    def fit(self, d: pd.DataFrame, q: pd.DataFrame, h: pd.DataFrame, window: int = 45, tau: float = 0.25):
+        u = prepare_gas_features(d[d["usable"]]).dropna(subset=GAS_FEATURES + ["gas_g"])
+        self.trained_until = u.index.max()
+        self.gas_model = smf.ols(GAS_FORMULA, u).fit()
+        rec = u[u.index > self.trained_until - pd.Timedelta(days=window)]
+        self.conformal_shift = float(np.quantile(rec["gas_g"] - self.gas_model.predict(rec), tau))
+        apm = d.loc[d["usable"], "air_per_mcal"].dropna()
+        self.air_per_mcal = float(max(apm[apm.index > self.trained_until - pd.Timedelta(days=window)].quantile(0.25),
+                                      apm.quantile(0.05)))
+        self.mb3_gain = float(boost_step_response(h, 12).iloc[-1])          # °C per kWh/h
+        self.mb3_target = float(h["mb3_temp"].median())
+        lim = historical_limits(q, h)
+        self.limits = {
+            "ng_scm": tuple(lim.loc["ng_scm (per 15 min)", ["P1", "P99"]]),
+            "afr": tuple(lim.loc["afr", ["P1", "P99"]]),
+            "bb_kwh_h": tuple(lim.loc["bb_kwh (per hour)", ["P1", "P99"]]),
+            "mb3_temp": tuple(h["mb3_temp"].quantile([0.01, 0.99])),
+            "opt_temp": tuple(lim.loc["opt_temp (°C)", ["P1", "P99"]]),
+            "ncv": (8500.0, 10500.0),
+            "draw_t": tuple(u["draw_t"].quantile([0.01, 0.99])),
+            "sec_air": tuple(q["sec_air"].quantile([0.01, 0.99])),
+            "gas_day_gcal": tuple(u["gas_g"].quantile([0.01, 0.99])),
+        }
+        return self
+
+    def gas_target(self, date, draw_t, bb_kwh_day, mb_kwh_day, optical_prev24h) -> float:
+        x = pd.DataFrame([{"draw_t": draw_t, "bb_g": bb_kwh_day * KCAL_PER_KWH / 1e6,
+                           "mb_g": mb_kwh_day * KCAL_PER_KWH / 1e6,
+                           "age_m": (pd.Timestamp(date) - AGE_ORIGIN).days / 30.44,
+                           "opt_f_prev": optical_prev24h}])
+        return float(self.gas_model.predict(x).iloc[0]) + self.conformal_shift
+
+    def recommend(self, inputs: dict, mb3_target: float | None = None, ki: float = 0.1) -> pd.DataFrame:
+        """inputs: date, ncv, draw_t, cullet_pct, optical_prev24h, bb_kwh_last_hour,
+        mb_kwh_last_hour, mb3_now. Boost/melter last hour are kWh per hour (read from DB)."""
+        L = self.limits
+        flags = []
+        for key, lim_key in [("ncv", "ncv"), ("draw_t", "draw_t"), ("optical_prev24h", "opt_temp"), ("mb3_now", "mb3_temp")]:
+            lo, hi = L[lim_key]
+            if not (lo <= inputs[key] <= hi):
+                flags.append(f"input {key}={inputs[key]} outside history [{lo:.0f}, {hi:.0f}]")
+        target = self.gas_target(inputs["date"], inputs["draw_t"], inputs["bb_kwh_last_hour"] * 24,
+                                 inputs["mb_kwh_last_hour"] * 24, inputs["optical_prev24h"])
+        # Daily gas heat is an outcome, not a setpoint: not clipped, only flagged.
+        target_c = target
+        if not (L["gas_day_gcal"][0] <= target <= L["gas_day_gcal"][1]):
+            flags.append(f"daily gas target {target:.1f} Gcal outside the historical daily range "
+                         f"[{L['gas_day_gcal'][0]:.1f}, {L['gas_day_gcal'][1]:.1f}] (setpoints below are still inside limits)")
+        heat = target_c * 1e6 / 96
+        ng_raw = heat / inputs["ncv"]
+        ng = float(np.clip(ng_raw, *L["ng_scm"]))
+        air_raw = self.air_per_mcal * ng * inputs["ncv"] / 1000
+        afr = float(np.clip(air_raw / ng, *L["afr"]))
+        air = float(np.clip(afr * ng, *L["sec_air"]))      # secondary air also within its own history
+        afr = air / ng
+        tgt = self.mb3_target if mb3_target is None else mb3_target
+        bb_raw = inputs["bb_kwh_last_hour"] + ki * (tgt - inputs["mb3_now"]) / self.mb3_gain
+        bb = float(np.clip(bb_raw, *L["bb_kwh_h"]))
+        if ng_raw > L["ng_scm"][1] and bb < inputs["bb_kwh_last_hour"]:
+            # gas is already at its historical maximum: don't take heat away from the bottom too
+            bb = float(inputs["bb_kwh_last_hour"])
+            flags.append("NG at historical maximum -> barrier boost not reduced this hour")
+        rows = [
+            ("Daily gas heat target (not a setpoint; flagged only)", target, target_c, "Gcal/day", L["gas_day_gcal"]),
+            ("NG setpoint (per 15 min, workbook unit)", ng_raw, ng, "SCM/15 min", L["ng_scm"]),
+            ("Secondary air (per 15 min, workbook unit)", air_raw, air, "SCM/15 min", L["sec_air"]),
+            ("Air-fuel ratio", air_raw / ng, afr, "-", L["afr"]),
+            ("Barrier boost, next hour", bb_raw, bb, "kWh/h", L["bb_kwh_h"]),
+            ("Barrier boost, next hour (per 15 min)", bb_raw / 4, bb / 4, "kWh/15 min", tuple(v / 4 for v in L["bb_kwh_h"])),
+        ]
+        rows = [(i, mv, rv, un, f"{lim[0]:.2f} - {lim[1]:.2f}") for i, mv, rv, un, lim in rows]
+        out = pd.DataFrame(rows, columns=["item", "model value", "recommended (within limits)", "unit", "historical P1-P99"])
+        out["clipped?"] = ~np.isclose(out["model value"], out["recommended (within limits)"])
+        out.attrs["flags"] = flags
+        return out

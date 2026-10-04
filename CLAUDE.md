@@ -106,6 +106,8 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 4. **Secondary air first:** `air = air_per_Mcal_target × heat / 1000`, target = P25 of the last 45 days (floor: historical P5). `AFR = air / NG`.
 5. Clip to historical P1–P99.
 
+**Live use:** `rc.FinalRecommender().fit(d, q, h).recommend(inputs)` (T4 §5). Setpoints (NG, secondary air, AFR, boost) are clipped to historical P1–P99. The daily gas total is an outcome: it is flagged, not clipped. If NG is at its upper limit, boost is not lowered.
+
 **Model 2, boost (nb05; selection T3):** hourly integral controller on MB3: `bb(t) = bb(t-1) + 0.1 × (MB3_target − MB3) / 0.019 °C per kWh/h`, clipped to [114, 610] kWh/h. Target = historical median MB3 (1,320.25 °C).
 
 **Back-test results, Jun–Aug 2026 (walk-forward, 85 usable days):**
@@ -159,6 +161,7 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 | `training/T1_gas_model_experiments.ipynb` | Gas inputs (barrier, optical, crown TC, MB3, cullet) × model types × 2 folds; hourly test | ✅ | `training_gas_*.csv`; choice in §6 |
 | `training/T2_secondary_air_experiments.ipynb` | Secondary air: volume vs heat, 4 formulas, efficient target | ✅ | `training_air_targets.csv` |
 | `training/T3_boost_model_experiments.ipynb` | Does boost help; MB3 response variants; 4 policies, closed loop × 2 folds | ✅ | `training_boost_policies.csv` |
+| `training/T4_final_model_and_recommender.ipynb` | **Final**: trains `FinalRecommender` on all usable data; walk-forward scorecard (overall, 5-t bands, draw-adjusted A, ageing-adjusted B); all T1 candidates on both yardsticks; setpoints vs historical limits; look-up tables; **live input cell (§5)** | ✅ | `T4_scorecard.csv`, `T4_band_pct.csv`, `T4_candidates_scorecard.csv` |
 
 Notebooks are executed with outputs saved. Run order after a data change: 01 → 02 → training T1–T3 → 04 → 05 → 03 (nb03 reads nb05's waterfall file). Rebuild the processed data with `q = dp.clean_15min(); d = dp.build_daily(q); h = dp.build_hourly(q); dp.write_processed(q, d, h)`.
 
@@ -176,7 +179,8 @@ Notebooks are executed with outputs saved. Run order after a data change: 01 →
 | Q8 | Electricity vs gas cost | Analysed inside and outside the historical range (nb05); more boost raises SFC anyway |
 | Q9 | Target | **Answered:** per draw band or draw-adjusted |
 | Q10 | Official limits for MB3/optical bands and electrode limits; seed sample definition | Open |
-| Q11 | Trial approval: optical −1 °C steps, MB3 target toward P25 | Open (next step) |
+| Q11 | Trial approval: phases 0–4, guard-rails and M&V in `docs/05` (30 days → ±0.74% CI) | Open (next step) |
+| Q12 | Success yardstick: Model A (draw-adjusted), band targets, and whether an ageing adjustment (Model B) is accepted. Setpoints give ~2% vs today; −2% vs the fixed baseline also needs ageing recovery (~1.1%) or draw | Open (client) |
 
 ## 9. Working rules
 
@@ -199,5 +203,7 @@ notebooks/01..05_*.ipynb       executed, with outputs
 notebooks/training/T1..T3      model-selection experiments (gas, secondary air, boost)
 data/raw/                      client files as received (+ README.md)
 data/processed/                cleaned outputs
-docs/                          earlier methodology and data-request notes (pre-DCS-data)
+docs/05_final_approach_and_trial_plan.md   plant-facing: approach, evidence, path to 2%, M&V, trial phases, guard-rails
+docs/06_model_training_and_selection.md    what was trained, why the final model, both yardsticks
+docs/01-02                     earlier methodology and data-request notes (pre-DCS-data)
 ```
