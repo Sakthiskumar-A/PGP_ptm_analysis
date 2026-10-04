@@ -1,13 +1,17 @@
 """Recommendation logic for the 60 TPD melter (used by notebooks 04 and 05).
 
-Model 1 (gas, every 15 min):
-    1. Daily gas-heat target from a walk-forward quantile regression on the last
-       `window` usable days: gas_Gcal ~ draw_t + barrier_Gcal + melter_Gcal,
-       at quantile `tau` (the "efficient frontier" of recent operation).
-    2. Spread evenly over the day (steady heat), plus a small optical trim.
+Model 1 (gas, every 15 min)  -- chosen in notebooks/training/T1, T2:
+    1. Daily gas-heat target: OLS on ALL past usable days
+       gas_Gcal ~ draw_t + barrier_Gcal + melter_Gcal + age_m + optical(previous day)
+       plus a conformal shift = 25th percentile of the last 45 days' residuals
+       (target = what the efficient quarter of recent comparable days needed).
+       Optical history is gap-filled from the crown thermocouple + rolling offset.
+    2. Spread evenly over the day (steady heat). No separate optical trim: the
+       crown effect is inside the model.
     3. NG setpoint = heat per 15 min / latest NCV  -> exact NCV compensation.
        Units: same as the workbook column the operator enters (no conversion).
-    4. AFR = target air-per-Mcal x NCV / 1000.
+    4. Secondary air = air-per-Mcal target x heat / 1000, AFR = air / NG.
+       Air-per-Mcal target = P25 of the last 45 days, floored at historical P5.
 
 Model 2 (barrier boost, every hour):
     Integral controller on MB3: bb(t) = bb(t-1) + ki * (MB3_target - MB3_now) / gain,
@@ -42,7 +46,10 @@ def historical_limits(q15: pd.DataFrame, h: pd.DataFrame, lo=0.01, hi=0.99) -> p
 
 
 # ----------------------------------------------------------------- Model 1
-GAS_FORMULA = "gas_g ~ draw_t + bb_g + mb_g"
+GAS_FORMULA_QR = "gas_g ~ draw_t + bb_g + mb_g"                       # first version (rolling QR)
+GAS_FORMULA = "gas_g ~ draw_t + bb_g + mb_g + age_m + opt_f_prev"     # chosen in T1
+GAS_FEATURES = ["draw_t", "bb_g", "mb_g", "age_m", "opt_f_prev"]
+AGE_ORIGIN = pd.Timestamp("2025-09-01")
 
 
 def add_gcal_columns(d: pd.DataFrame) -> pd.DataFrame:
@@ -53,25 +60,61 @@ def add_gcal_columns(d: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-def daily_gas_target(d_usable: pd.DataFrame, day, inputs: dict, tau=0.25, window=45) -> float:
-    """Gas heat target (Gcal/day) for `day`, fitted only on the `window` days before it."""
-    d = add_gcal_columns(d_usable)
-    tr = d[(d.index < day) & (d.index >= pd.Timestamp(day) - pd.Timedelta(days=window))]
+def prepare_gas_features(d: pd.DataFrame) -> pd.DataFrame:
+    """Gcal columns, furnace age, and optical gap-filled from the thermocouple.
+
+    opt_f = optical daily mean on trustworthy days (nb02); other days = crown TC +
+    rolling 30-day median offset (optical - TC, F4). opt_f_prev = previous day
+    (live: mean of the last 24 h of typed optical readings).
+    """
+    d = add_gcal_columns(d)
+    d["age_m"] = (d.index - AGE_ORIGIN).days / 30.44
+    opt = d["opt_temp"].where(d["opt_day_ok"].astype(bool))
+    off = (opt - d["crown_tc"]).rolling(30, min_periods=5).median().ffill().bfill()
+    d["opt_f"] = opt.fillna(d["crown_tc"] + off)
+    d["opt_f_prev"] = d["opt_f"].shift(1)
+    return d
+
+
+def daily_gas_target(d_usable: pd.DataFrame, day, overrides: dict | None = None,
+                     tau: float = 0.25, window: int = 45, method: str = "ols_conformal") -> float:
+    """Gas heat target (Gcal/day) for `day`, using only days before it.
+
+    method="ols_conformal" (chosen): OLS on all past days + conformal shift from
+    the last `window` days. method="qr_rolling": first version, quantile
+    regression on the last `window` days (kept for comparison).
+    `overrides` replaces inputs of the day (e.g. {"bb_g": recommended boost}).
+    """
+    d = prepare_gas_features(d_usable)
+    x = d.loc[[day]].copy()
+    for k, v in (overrides or {}).items():
+        x[k] = v
+    hist = d[d.index < day]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")          # IterationLimitWarning: solution is still usable
-        m = smf.quantreg(GAS_FORMULA, tr).fit(q=tau, max_iter=5000)
-    x = pd.DataFrame([inputs])
-    return float(m.predict(x).iloc[0])
+        if method == "qr_rolling":
+            tr = hist[hist.index >= pd.Timestamp(day) - pd.Timedelta(days=window)]
+            m = smf.quantreg(GAS_FORMULA_QR, tr).fit(q=tau, max_iter=5000)
+            return float(m.predict(x).iloc[0])
+        hist = hist.dropna(subset=GAS_FEATURES + ["gas_g"])
+        rec = hist[hist.index >= pd.Timestamp(day) - pd.Timedelta(days=window)]
+        m = smf.ols(GAS_FORMULA, hist).fit()
+        shift = float(np.quantile(rec["gas_g"] - m.predict(rec), tau))
+        return float(m.predict(x).iloc[0]) + shift
 
 
-def walk_forward_gas_targets(d_usable: pd.DataFrame, days, tau=0.25, window=45) -> pd.Series:
-    d = add_gcal_columns(d_usable)
-    out = {}
-    for day in days:
-        row = d.loc[day]
-        out[day] = daily_gas_target(d_usable, day, {"draw_t": row.draw_t, "bb_g": row.bb_g,
-                                                    "mb_g": row.mb_g}, tau, window)
-    return pd.Series(out, name=f"gas_target_tau{tau}")
+def walk_forward_gas_targets(d_usable: pd.DataFrame, days, tau=0.25, window=45,
+                             method: str = "ols_conformal") -> pd.Series:
+    return pd.Series({day: daily_gas_target(d_usable, day, None, tau, window, method) for day in days},
+                     name=f"gas_target_{method}")
+
+
+def air_target(d_usable: pd.DataFrame, day, window: int = 45, q: float = 0.25, floor_q: float = 0.05) -> float:
+    """Air per Mcal target (T2): P25 of the last `window` days, floored at the
+    historical P5 of all earlier days (never below proven operation; no O2 analyser)."""
+    hist = d_usable.loc[d_usable.index < day, "air_per_mcal"].dropna()
+    recent = hist[hist.index >= pd.Timestamp(day) - pd.Timedelta(days=window)]
+    return float(max(recent.quantile(q), hist.quantile(floor_q)))
 
 
 @dataclass
@@ -82,19 +125,27 @@ class GasRecommendation:
     heat_kcal: float        # gas heat this 15-min interval
 
 
-def recommend_gas(day_target_gcal: float, ncv_now: float, opt_now: float | None = None,
-                  opt_target: float = 1574.5, trim_per_degC: float = 0.0,
-                  air_per_mcal: float = 1.26, limits: dict | None = None) -> GasRecommendation:
-    """One 15-min gas recommendation (to be shown by minute 15 of the reversal cycle)."""
+def recommend_gas(day_target_gcal: float, ncv_now: float, air_per_mcal: float,
+                  limits: dict | None = None, opt_now: float | None = None,
+                  opt_target: float = 1574.5, trim_per_degC: float = 0.0) -> GasRecommendation:
+    """One 15-min gas recommendation (to be shown by minute 15 of the reversal cycle).
+
+    Secondary air is recommended first (air_per_mcal x heat), then AFR = air / NG.
+    The optical trim is off by default: the chosen gas model already contains
+    the optical crown temperature (T1).
+    """
     heat = day_target_gcal * 1e6 / 96
     if opt_now is not None and not np.isnan(opt_now) and trim_per_degC:
         heat *= 1 + trim_per_degC * (opt_target - opt_now)
     ng = heat / ncv_now
-    afr = air_per_mcal * ncv_now / 1000
     if limits:
         ng = float(np.clip(ng, *limits.get("ng_scm", (-np.inf, np.inf))))
-        afr = float(np.clip(afr, *limits.get("afr", (-np.inf, np.inf))))
-    return GasRecommendation(ng, afr, ng * afr, ng * ncv_now)
+    sec_air = air_per_mcal * ng * ncv_now / 1000
+    afr = sec_air / ng
+    if limits and "afr" in limits:
+        afr = float(np.clip(afr, *limits["afr"]))
+        sec_air = afr * ng
+    return GasRecommendation(ng, afr, sec_air, ng * ncv_now)
 
 
 # ----------------------------------------------------------------- Model 2
@@ -151,6 +202,32 @@ def simulate_boost_controller(hh: pd.DataFrame, step: pd.Series, mb3_target: flo
         m_sim = m_act + sum(g[k] * dev_hist[-1 - k] for k in range(n))
         prev = bb_act if prev is None else prev
         b = float(np.clip(prev + ki * (mb3_target - m_sim) / gain, *bb_limits))
+        prev = b
+        out_b.append(b); out_m.append(m_sim); dev_hist.append(b - bb_act)
+    res = hh.copy()
+    res["bb_rec"] = out_b
+    res["mb3_sim"] = out_m
+    return res
+
+
+def simulate_policy(hh: pd.DataFrame, step: pd.Series, policy) -> pd.DataFrame:
+    """Closed-loop replay for any boost policy.
+
+    policy(prev_bb, mb3_sim, row) -> recommended boost for this hour (kWh/h).
+    MB3_sim = actual MB3 + superposed effect of all past (recommended - actual) boost.
+    """
+    g = step.diff().fillna(step.iloc[0]).to_numpy()
+    out_b, out_m, dev_hist = [], [], []
+    prev = None
+    for ts, row in hh.iterrows():
+        bb_act, m_act = row["bb_kwh"], row["mb3_temp"]
+        if np.isnan(bb_act) or np.isnan(m_act):
+            out_b.append(np.nan); out_m.append(np.nan); dev_hist.append(0.0)
+            continue
+        n = min(len(g), len(dev_hist))
+        m_sim = m_act + sum(g[k] * dev_hist[-1 - k] for k in range(n))
+        prev = bb_act if prev is None else prev
+        b = float(policy(prev, m_sim, row))
         prev = b
         out_b.append(b); out_m.append(m_sim); dev_hist.append(b - bb_act)
     res = hh.copy()
