@@ -94,7 +94,7 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 | F8 | **CORRECTED:** barrier boost replaces only ~0.56 (frontier model) to ~0.81 (month FE) Gcal of gas per Gcal. **More boost raises SFC; less boost (MB3 held) lowers it** | nb03 §3c, nb04 §2 |
 | F9 | Cullet (16–20%) has no significant energy effect | nb03 §2 |
 | F10 | **MB3 is controlled by barrier boost:** +100 kWh/h → +1.9 °C (steady state, 6–12 h). Gas barely moves MB3. In Jun–Aug 2026, MB3 ran 1.5 °C above its historical median | nb03 §3d, nb05 |
-| F11 | **Optical log errors proven:** DD/MM ↔ MM/DD swap (all 36 missing days have day ≤ 12; 10/10 predicted swap targets carry duplicates, p ≈ 7e-4), and a 12-hour clock in 6 months of 2026 | nb02 |
+| F11 | **Optical log errors proven:** DD/MM ↔ MM/DD swap (all 36 missing days have day ≤ 12; 10/10 predicted swap targets carry duplicates, p ≈ 7e-4), and a 12-hour clock in 6 months of 2026. **Only optical is hit** because it is the only hand-typed source with text dates: in all 5,472 duplicated time stamps the other 12 columns are identical, and on optical-missing days every other column is 100% filled. Month-first parsing reproduces the pattern exactly (nb02 §3) | nb02 |
 | F12 | Best vs worst days (draw/age-adjusted): best days have less air/Mcal, −500 kWh/day melter boost, −0.5 °C MB3, steadier NCV, fewer seeds, the same optical | nb03 §3b |
 
 ## 6. Recommenders (implemented in `src/recommender.py`)
@@ -126,7 +126,7 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 | Notebook | Purpose | Status | Key outputs |
 |---|---|---|---|
 | `01_data_audit.ipynb` | Raw-data audit, units, zero runs, optical vs TC, SFC reconciliation | ✅ | `data/processed/*` (via `data_prep`); our SFC = client SFC (median ratio 0.998) |
-| `02_optical_log_evidence.ipynb` | Proof of the optical date swap and 12-h clock, typos, draw doubling | ✅ | F11, rules `opt_day_ok`, `opt_hour_ok`, `ampm_months` |
+| `02_optical_log_evidence.ipynb` | Why only optical is wrong (source/join tests A–B), raw Excel rows, parsing demo, proof of date swap and 12-h clock, typos, draw doubling | ✅ | F11, rules `opt_day_ok`, `opt_hour_ok`, `ampm_months` |
 | `03_insights.ipynb` | Own baseline vs client, draw bands, M&V models A/B, ageing, lever analysis, savings bridge | ✅ | F1–F3, F6–F10, F12; M&V Model A (`E ~ draw + cullet`, baseline period) |
 | `04_gas_recommendation.ipynb` | Model 1: frontier tuning (τ, window), safety check, 15-min back-test, scenarios with/without limits, per band, draw-adjusted, Sep validation hook | ✅ | gas saving 0.91% SFC |
 | `05_boost_recommendation.ipynb` | Model 2: MB3 step response, controller tuning, scenarios A (inside history) / B (outside), combined gas + boost back-test, path to 2% | ✅ | combined 1.46% (+air ~1.6%); draw-adjusted −0.52% |
