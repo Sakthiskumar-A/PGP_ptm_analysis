@@ -128,7 +128,7 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 | Gas target (nb04) | **Daily** rows of usable days: target = gas heat (Σ NG × valid NCV), inputs = draw, barrier boost, melter boost. Refitted every day on the **last 45 usable days** (walk-forward) | 38–45 days per fit (median 42); for the Jun–Aug 2026 test, 129 distinct days (17 Apr – 30 Aug 2026). Usable days in total: 316 | NCV-zero/missing days, spikes; **optical** (hand-typed, flat); **crown TC MC3**; cullet (no effect; captured by the window); client workbook |
 | Optical trim gain (nb04) | Hourly optical vs gas heat, **only hours with a trustworthy optical time stamp** (`opt_hour_ok`; months with the 12-h clock and duplicate slots excluded) | 3,302 hours | – |
 | Air target (nb04) | Historical P25 of daily air per Mcal (usable days) | 316 days | – |
-| Boost controller (nb05) | Hourly MB3, barrier boost and gas (distributed lag, 0–12 h) for the MB3 step response | ~8,400 hours | crown TC, optical |
+| Boost controller (nb05) | Hourly MB3, barrier boost and gas (distributed lag, 0–12 h) for the MB3 step response | 6,736 hours (complete 13-hour lag windows) | crown TC, optical |
 | Back-tests | 15-min data, Jun–Aug 2026 (8,092 recommendations) | 85 test days | Sep 2026 (waiting for draw) |
 
 **Crown thermocouple TC MC3 is not used to train any model.** It is used only for checks: the optical comparison (nb01), frontier-day temperatures (nb04 §3) and the historical limits table.
