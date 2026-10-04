@@ -154,6 +154,8 @@ def build_daily(q: pd.DataFrame) -> pd.DataFrame:
     d["energy_kcal"] = d["gas_kcal"] + d["elec_kcal"]
     d["sfc"] = d["energy_kcal"] / d["draw_kg"]
     d["day_complete"] = (d["ng_cov"] >= 0.9) & (d["boost_cov"] >= 0.9) & d["draw_kg"].notna()
+    # User decision: days without a working NCV meter are left out of analysis/modelling.
+    d["ncv_ok"] = d["ncv_cov"] >= 0.9
     d.index.name = "date"
     return d
 
