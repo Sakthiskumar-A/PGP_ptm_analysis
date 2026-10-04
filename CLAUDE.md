@@ -140,7 +140,7 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 
 | Model | Trained on | Rows | Not used |
 |---|---|---|---|
-| Gas target (nb04) | Daily usable days. Target = Σ NG × valid NCV; inputs = draw, barrier, melter boost, age, optical (prev day; gap-filled from TC + offset). OLS on all past days + 45-day conformal shift | Jun–Aug 2026 fits: ~220–300 past days each | NCV zero/missing/spikes, hourly optical, cullet, MB3, client workbook |
+| Gas target (nb04) | Daily usable days. Target = Σ NG × valid NCV; inputs = draw, barrier, melter boost, age, optical (prev day; gap-filled from TC + offset). OLS on all past days + 45-day conformal shift | Jun–Aug 2026 fits: 230–314 past days each (from 12 Oct 2025) | NCV zero/missing/spikes, hourly optical, cullet, MB3, client workbook |
 | Air target (nb04) | Daily air per Mcal, last 45 days (P25), floor = historical P5 | 45 days | – |
 | Boost controller (nb05) | Hourly MB3, boost, gas (distributed lag 0–12 h) | 6,736 hours | crown TC (doesn't change the gain), optical |
 | Back-tests | 15-min data Jun–Aug 2026 | 85 days, 8,092 recommendations | Sep 2026 (waiting for draw) |
