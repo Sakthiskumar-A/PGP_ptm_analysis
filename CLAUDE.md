@@ -11,137 +11,151 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 - Furnace feeds lines **S09, S10, S11, S12**. Scope is **melter only** (melter NG, melter boost, barrier boost); forehearths are excluded.
 - **SFC formula (client, do not change):**
   ```
-  SFC (kcal/kg) = [ Σ NG_scm × NCV_kcal/scm  +  (Σ Barrier_kWh + Σ Melter_kWh) × 860 ] / Draw_kg      (per day)
+  SFC (kcal/kg) = [ Σ NG × NCV  +  (Σ Barrier_kWh + Σ Melter_kWh) × 860 ] / Draw_kg      (per day)
   ```
   Compute `NG × NCV` per interval, then sum. Never multiply daily NG by an average NCV.
-- **Baseline (client workbook):** 1 Sep 2025 – 31 Jul 2026, average daily SFC **1,576.3 kcal/kg** → target **1,544.8 kcal/kg**. The client also sets 2% targets per draw band: 45–50 t: 1,730 · 50–55 t: 1,629 · 55–60 t: 1,534 · 60–65 t: 1,490.
+- **Client baseline:** 1 Sep 2025 – 31 Jul 2026, average daily SFC **1,576.3 kcal/kg** → target **1,544.8**. **We reproduced it from raw data: 1,576.4** (nb03).
+- **Success criterion (user, 2026-10-04):** per draw band (5-t bands, −2% each) **or** draw-adjusted (−2% vs baseline model at the same draw and cullet). Both are computed in nb03–nb05.
 
-## 2. What the plant wants (from `Sheet1` of the analytical record + plant meeting)
+## 2. What the plant wants and how the furnace works
 
-Two recommendation models. Operators change NG roughly every 15 min, when NCV updates.
+| Model | Automated input | Operator input | Recommends | Frequency |
+|---|---|---|---|---|
+| **1. Gas** | NCV (UEMS, MQTT, 15 min) | Draw (day), optical crown temp, cullet % (day); **actual boost read from DB** | **NG flow**, **air-fuel ratio** (→ secondary air) | every 15 min / per reversal cycle |
+| **2. Electricity** | MB3 bottom temp (DCS) | Draw (day), cullet % (day) | **Barrier boost** | every hour |
 
-| Model | Automated input | Operator input | Recommends |
-|---|---|---|---|
-| **1. Gas** | NCV (UEMS, MQTT, every 15 min) | Draw (day), optical crown temp, cullet % (day) | **NG flow** and **air-fuel ratio** (→ secondary air) |
-| **2. Electricity** | MB3 bottom temp (DCS autoloader) | Draw (day), cullet % (day) | **Barrier boost (kWh)** |
-
-- Plant also has **threshold limits for gas, boosting and temperatures**. We still need the values (open question Q4).
-- **Melter boost** sits on a few fixed levels (57.2 → 76.4 → 95.5 kWh per 15 min) because it runs under the burners. Use it as a known input; don't recommend it.
-- **Crown temperature:** two sensors, the pyrometer (**optical, primary**) and thermocouple **TC MC3**. Plant guidance: use both if the offset is constant and useful, otherwise optical only. Decision is in Findings F4.
+- **Furnace:** regenerative, **2 inlets/ports**. Each carries NG + secondary air; while one fires, the other is the exhaust. They switch on a **20-min timer**. The operator sets **one NG flow for both inlets** (common header) anywhere in the **minute 15–20 window** of each cycle. So the recommendation must be ready by minute 15, using the latest NCV.
+- **Units:** recommend in the **same unit as the workbook column**. The operator enters that value; no conversion.
+- **No O₂ analyser.** Air can only be recommended inside its proven historical range.
+- **Limits:** use **historical limits** (P1–P99) until the plant supplies official ones.
+- **Melter boost** is fixed on a few levels (57.2 → 76.4 → 95.5 kWh/15 min). It's a known input, not recommended.
+- **Optical crown temperature** is typed by hand (hourly). It is the primary crown signal for operators; TC MC3 (1-min DCS) is the clean hourly crown signal for analysis.
 
 ## 3. Data (all in `data/raw/`, never edit; cleaned data in `data/processed/`)
 
 | File | Content | Frequency / period |
 |---|---|---|
 | `Analytical_Record_Creation_EE_60TPD_updated-2.xlsx` | Sheet `result`: main 15-min record. Sheet `Sheet1`: plant's model design | 15 min, 1 Sep 2025 – 30 Sep 2026 |
-| `DCS_60_TPD_MelterCrown3.xlsx` | Crown thermocouple TC MC3 (`dcs_60_DateTime`, rows newest first) | 1 min, 1 Sep 2025 – 1 Oct 2026 |
-| `SFC_60_TPD_Baseline_Calculation_Sep-25_to_Jul-26_updated.xlsx` | Client baseline: daily NG, NCV, boosts, SAP draw, SFC, draw-band targets | Daily, 1 Sep 2025 – 31 Jul 2026 |
+| `DCS_60_TPD_MelterCrown3.xlsx` | Crown thermocouple TC MC3 (rows newest first) | 1 min, 1 Sep 2025 – 1 Oct 2026 |
+| `SFC_60_TPD_Baseline_Calculation_Sep-25_to_Jul-26_updated.xlsx` | Client baseline workbook. **Used only for comparison/verification**, never to fill data | Daily, 1 Sep 2025 – 31 Jul 2026 |
 
-### Column dictionary (15-min record → short name used in code)
+**Sep 2026 draw is missing.** The client will send it, and **Sep 2026 is the validation month** (nb04 §8 checks automatically).
 
-| Raw column | Short name | Meaning / unit (inferred, see Q1) |
+### Column dictionary (15-min record → short name)
+
+| Raw column | Short name | Meaning / unit |
 |---|---|---|
 | `Timestamps` | `ts` | 15-min timestamp (interval start assumed) |
-| `BARRIER BOOSTER-52` | `bb_kwh` | Barrier boost energy, **kWh per 15 min** (Σ96 = baseline daily kWh, ratio 1.002) |
-| `MELTER BOOSTER-51` | `mb_kwh` | Melter boost energy, **kWh per 15 min** (ratio 1.000) |
+| `BARRIER BOOSTER-52` | `bb_kwh` | Barrier boost, kWh per 15 min (Σ96 = SAP daily kWh) |
+| `MELTER BOOSTER-51` | `mb_kwh` | Melter boost, kWh per 15 min |
 | `NCV Meter` | `ncv` | Gas NCV, kcal/SCM |
-| `Cullet %` | `cullet_pct` | Cullet % of the day (only 16–20, changes about monthly) |
-| `Melter Optical Temperature` | `opt_temp` | Pyrometer crown temp, °C. **Manual hourly reading**, integers, carried forward |
-| `dcs_60_SecondaryAirFlowvalueFTSAFPVDB205DD92` | `sec_air` | **Secondary (combustion) air** flow, same per-15-min basis as NG. The plant calls it "secondary gas", but it is air (Q2) |
-| `dcs_60_MelterGasflowvalueFTMGFPVDB202DD92` | `ng_scm` | Melter natural gas, **SCM per 15 min** (Σ96 = baseline daily SCM, ratio 1.005) |
-| `dcs_60_ThermocoupleMelterBottom3TCMB3PVDB249DD572` | `mb3_temp` | Melter bottom temp TC MB3, °C (~1,320 ± 2) |
-| `Air_Fuel_Ratio` | `afr` | Exactly `sec_air / ng_scm` (volume ratio, median 12.2) |
-| `Seed Count` / `Seed Count Specs` | `seed_count` / `seed_spec` | Daily seed count; spec "30.0 each" (mean 14.8; 1 day of 395 above 30) |
-| `MB51_Quantity_KG (Draw)` | `draw_kg` | SAP daily draw, repeated on every row of the day |
-| `SFC (kcal/kg)` | `sfc_record` | Client's daily SFC. **Don't use:** wrong while NCV = 0. Recompute instead |
+| `Cullet %` | `cullet_pct` | Cullet % (16–20, changes about monthly) |
+| `Melter Optical Temperature` | `opt_temp` | Pyrometer crown temp, °C; **manual hourly log** (see F11) |
+| `dcs_60_SecondaryAirFlowvalue…` | `sec_air` | Secondary (combustion) air, same basis as NG (the plant calls it "secondary gas") |
+| `dcs_60_MelterGasflowvalue…` | `ng_scm` | Melter NG on the **common header**, workbook unit = operator unit (Σ96 = SAP daily SCM) |
+| `dcs_60_ThermocoupleMelterBottom3…` | `mb3_temp` | Bottom temp TC MB3, °C |
+| `Air_Fuel_Ratio` | `afr` | = `sec_air / ng_scm` |
+| `Seed Count` / `Seed Count Specs` | `seed_count` / `seed_spec` | Daily seeds; spec "30.0 each" |
+| `MB51_Quantity_KG (Draw)` | `draw_kg` | SAP daily draw |
+| `SFC (kcal/kg)` | `sfc_record` | Client's SFC column. Don't use (wrong while NCV = 0) |
 
-Crown file: `dcs_60_ThermocoupleMelterCrown3TCMC3PVDB249DD202` → `crown_tc` (°C, ~1,567).
+## 4. Cleaning rules (`src/data_prep.py`; evidence in nb01 and nb02)
 
-## 4. Cleaning rules (implemented in `src/data_prep.py`, evidence in notebook 01)
-
-1. **Duplicate timestamps:** 5,472 timestamps appear twice, and the copies differ **only in `opt_temp`**. Keep one row per timestamp and average `opt_temp`.
-2. **Zeros = sensor not working → NaN** (flag columns `*_bad`). Valid ranges:
+1. **Duplicate timestamps** (5,472) differ only in `opt_temp`. Keep one row per timestamp, average optical, flag `opt_dup`.
+2. **Zeros/out-of-range → NaN** (`*_bad` flags):
    - NCV 7,000–11,500
-   - optical 1,550–1,600 (typos like 2576, 15757, 15722, 1674, 1474)
-   - melter boost 1–200 (one spike of 538)
+   - optical 1,550–1,600
+   - melter boost 1–200
    - barrier boost 1–250
    - crown TC 1,400–1,700
-3. **NCV = 0 from 1 Sep to 6 Oct 2025** (856 h), plus missing 6–8 Oct 2025 and 13–16 Jul 2026. **User decision (2026-10-04): leave out rows and days where NCV is zero or missing** from all analysis and modelling (`ncv_ok` flag). The baseline-NCV fill (`ncv_source='baseline'`, 44 days) is only for comparing with the client's daily SFC.
-4. **Draw:** the record doubles the draw on 2025-10-01 and 2026-06-01, so the baseline workbook draw is used wherever it exists. **Draw for Sep 2026 is missing** (Q5).
-5. NG, air and MB3 share 21 DCS gaps (≤ 11 h). Interpolate gaps ≤ 1 h for energy totals; leave longer gaps as NaN. `day_complete` = NG and boost coverage ≥ 90% and draw present.
-6. AFR is recomputed from the cleaned flows. Crown TC is averaged from 1 min to 15 min (interval start).
-7. **Reconciliation check passed:** recomputed daily SFC vs the client's daily SFC on 329 complete days: median ratio **0.999** (p05 0.985, p95 1.013). The few days off by > 3% are where the DCS gas total differs from the SAP gas total.
+3. **NCV zero or missing → day left out** (user decision): `ncv_ok` = NCV coverage ≥ 90%. **No client NCV is used.**
+4. **Draw doubled** on 2025-10-01 and 2026-06-01: detected as > 1.6× the surrounding-week median and halved (`draw_fixed`). The halved values equal SAP exactly (verified in nb02).
+5. **Optical log:**
+   - **date swap** (DD/MM ↔ MM/DD) on days 1–12 → `opt_day_ok`
+   - **12-hour clock** in Jan, Mar, Apr, Jun, Aug, Sep 2026 (detected from data by `ampm_months`) → `opt_hour_ok = False`
+   - Hourly optical is only used where `opt_hour_ok`.
+6. Interpolate NG/boost/air gaps ≤ 1 h before daily sums. **`usable` = ncv_ok & ≥ 90% data & draw present** (316 of 395 days; 286 in the baseline period, 11 Oct 2025 – 31 Jul 2026).
+7. Outputs:
+   - `ar_15min_clean.parquet` (index `ts`)
+   - `hourly_clean.parquet` (index `ts`)
+   - `daily_clean.parquet/.csv` (index `date`; key columns `sfc`, `energy_kcal`, `gas_kcal`, `elec_kcal`, `ncv`, `usable`, `in_baseline`, `opt_day_ok`, `air_per_mcal`)
 
-## 5. Findings so far (keep updated; don't re-derive)
+## 5. Findings (keep updated; don't re-derive)
 
-| # | Finding | Evidence | Implication |
-|---|---|---|---|
-| F1 | **Draw drives SFC** (r ≈ −0.88): `Energy/day ≈ 55.4 Gcal + 0.608 Gcal × draw_t`, so ~60% of energy is fixed; +1 t/day ≈ −1% SFC | Baseline workbook | Judge the 2% **draw-normalized** (and by client draw bands), never on the raw average |
-| F2 | Draw-adjusted SFC rose through the year: Sep-25 ~1,527 → Mar-26 ~1,593 at the same 57.2 t → Jul-26 ~1,650. **Aug-26 recovered to 1,563 at 59.7 t** | nb01 §7 monthly table | The baseline average includes a deterioration. Check what changed in Aug-26 (boost back up, AFR down) |
-| F3 | **NCV compensation is partial and lagged.** Hourly NG tracks NCV level (r −0.80), but within a day NG moves only **~73%** of what exact heat compensation needs, with ~1 h lag | nb01 §8 | Recommending `NG = Q_required / NCV` removes the drift. **Lever 1** |
-| F4 | **Optical vs TC MC3:** offset +7.6 °C (daily sd 1.0), drifting +6.9 → +8.8 °C over the year; hourly correlation ≈ 0.03. Optical is held flat at ~1,574.5 (daily sd 0.5) | nb01 §6 | **Optical = primary.** TC = gap-filler (`opt ≈ TC + monthly offset`) and a 1-min feature for furnace response. History can't show what a lower crown setpoint does, so that needs a step trial |
-| F5 | **15-min NG has a sawtooth** (autocorrelation peak at lag 7 ≈ 105 min). **Plant confirms a regenerative furnace with 2 ports switching on a 20-min timer**; the operator sets NG in the minute 15–20 window. The data repeats every ~105 min (≈ 5 × 21 min), so the effective cycle is probably ~21 min (changeover time and/or a variable setting moment; Q11). 15-min sampling aliases it | nb01 §8, Q3 | **Model gas at 1-h resolution** (averages ~3 cycles). Recommend once per reversal cycle using the latest NCV |
-| F6 | **AFR median 12.2** (11.2–13.3) and it **tracks NCV** (hourly r 0.88), so air per unit of gas heat is held nearly constant at **1.27 ± 0.03 SCM air per Mcal**. Natural-gas stoichiometric air is roughly 1.1 SCM/Mcal (to confirm with gas composition), which puts excess air at about **15%** | nb01 §8 | Air already scales with heat. Recommend AFR = target air-per-Mcal × NCV/1000 and test lowering the target (e.g. 1.27 → 1.22). **Lever 2**; confirm with flue O₂ |
-| F7 | **Seeds have headroom:** mean 14.8 against a spec of 30 (1 day above) | nb01 §8 | Room for a small optical setpoint reduction trial. **Lever 3** |
-| F8 | **Barrier boost** fell from ~10,900 kWh/day (Sep-25) to ~6,900 (Jul-26), then rose to ~10,400 (Aug-26). In the baseline regression, 1 Gcal boost displaced ~1.6 Gcal gas | nb01 §7, baseline | Boost is a substitute for gas, and the SFC formula favours it. **Lever 4**, within electrode limits |
-| F9 | Cullet only changes about monthly (16–20%); MB3 varies ±2 °C; seeds are only weakly correlated with anything (all |r| < 0.16) | nb01 | Cullet is a slow covariate. Weak seed correlations mean the quality guard-rail is best handled as a limit, not a model |
+| # | Finding | Evidence |
+|---|---|---|
+| F1 | **Draw drives SFC.** Energy ≈ 54 Gcal/day fixed + 0.63 Gcal/t; ~60% fixed; +1 t/day ≈ −1% SFC | nb03 §2 |
+| F2 | **Furnace ageing: +0.19% energy per month** at the same draw (p ≈ 0.004). Jun–Aug 2026 is **+0.9% (SFC-based, nb03) / +1.1% (energy-based, nb04–05) above the draw-adjusted baseline**, so −2% vs baseline ≈ −3% vs today | nb03 §2 |
+| F3 | **NCV compensation lags:** operators make ~17% of the needed NG change in the same hour, ~70% after 1 h, ~80% after 2 h. `NG = heat / NCV` makes it exact | nb03 §3a |
+| F4 | Optical vs TC MC3 (trustworthy hours only): offset +7.4 °C (daily sd 0.9), drifting +6.8 → +8.3; hourly r ≈ 0.02, daily r ≈ 0.44. Optical is held flat (daily sd 0.5 °C) | nb01 §6 |
+| F5 | 15-min NG has a sawtooth (lag-7 autocorrelation) from the **20-min reversal** sampled every 15 min | nb01 §8 |
+| F6 | Air per Mcal ≈ 1.27 SCM/Mcal (tracks NCV). **Less air per Mcal → less energy** (p ≈ 0.003, within the historical range). Moving to the historical P25 (1.258) ≈ **−0.16%** | nb03 §3f |
+| F7 | **Seeds:** P95 = 21, never above the spec of 30 on usable days. Best-energy days have fewer seeds; more energy and a hotter crown go with *more* seeds | nb03 §3b, §3e |
+| F8 | **CORRECTED:** barrier boost replaces only ~0.56 (frontier model) to ~0.81 (month FE) Gcal of gas per Gcal. **More boost raises SFC; less boost (MB3 held) lowers it** | nb03 §3c, nb04 §2 |
+| F9 | Cullet (16–20%) has no significant energy effect | nb03 §2 |
+| F10 | **MB3 is controlled by barrier boost:** +100 kWh/h → +1.9 °C (steady state, 6–12 h). Gas barely moves MB3. In Jun–Aug 2026, MB3 ran 1.5 °C above its historical median | nb03 §3d, nb05 |
+| F11 | **Optical log errors proven:** DD/MM ↔ MM/DD swap (all 36 missing days have day ≤ 12; 10/10 predicted swap targets carry duplicates, p ≈ 7e-4), and a 12-hour clock in 6 months of 2026 | nb02 |
+| F12 | Best vs worst days (draw/age-adjusted): best days have less air/Mcal, −500 kWh/day melter boost, −0.5 °C MB3, steadier NCV, fewer seeds, the same optical | nb03 §3b |
 
-## 6. Approach to the 2%
+## 6. Recommenders (implemented in `src/recommender.py`)
 
-**Core idea:** a model trained to copy what operators did reproduces the baseline. To save energy, the recommender must (a) apply physics exactly where operators are imperfect (NCV, air), and (b) aim at the **efficient** historical operation for the same conditions, within limits.
+**Model 1, gas (nb04):**
+1. Daily gas-heat target = walk-forward **quantile regression (τ = 0.25, last 45 usable days)**: `gas_Gcal ~ draw_t + barrier_Gcal + melter_Gcal`. Out-of-sample calibration: 24% of test days below the target (25% expected).
+2. Spread evenly over the day, with an optical trim of 0.29% heat per °C below target (operators' own historical response).
+3. `NG = heat per 15 min / latest NCV`.
+4. `AFR = 1.258 × NCV / 1000`.
+5. Clip to historical P1–P99.
 
-1. **Baseline & M&V** (nb02). Draw-normalized expected daily energy = f(draw, cullet, month/age). The saving is expected minus actual; report it alongside the client's draw-band table. Add Aug–Sep 2026 as the "current state" check.
-2. **Hourly modelling table** (nb03). Hourly means/sums of the 15-min data, plus crown TC, lags (1–8 h) of gas heat, boosts and temperatures, and day-level draw/cullet. Drivers, best-days (lowest normalized SFC with seeds within spec), AFR vs NCV, and NCV-compensation simulation.
-3. **Gas model (Model 1)** (nb04). Predict the **required gas heat** `Q_gas (kcal/h) = f(draw, cullet, optical target, MB3, barrier+melter boost, lags)`.
-   - Fit it to the efficient frontier (quantile regression at ~P30–P40 and/or best-days training), not the mean.
-   - Recommendation: `NG = Q_gas / NCV_latest`, given once per 20-min reversal cycle. It must be **ready by minute 15**, so the operator can apply it during the minute 15–20 setting window, using the latest 15-min NCV. That gives exact NCV compensation by construction.
-   - **AFR** = target air-per-Mcal × NCV / 1000 (today ~1.27 SCM/Mcal; target from efficient periods and O₂ when available). Secondary air = AFR × NG.
-   - Boost must be an input to the gas model, because boost replaces gas heat (Q6).
-4. **Electricity model (Model 2)** (nb05). Barrier boost kWh needed to hold MB3 in its band, given draw and cullet, again fitted to efficient operation. Then decide the gas/boost split: more boost lowers SFC (860 kcal/kWh), limited by electrode/transformer limits and cost (Q4, Q7).
-5. **Joint recommendation + back-test** (nb06). Order: boost first (Model 2), then gas given that boost (Model 1).
-   - Back-test on a time-based hold-out. **Sep 2026 is the validation month** (once its draw arrives), Jun–Aug 2026 the test period: simulated SFC = Σ(recommended NG × actual NCV + (recommended BB + actual MB) × 860) / actual draw.
-   - Success = ≥ 2% below actual (draw-normalized), with predicted optical/MB3 inside their bands and the thresholds respected.
-   - Use the TC MC3 / MB3 response models as soft sensors for temperature.
-6. **Trial** (advisory). 4–6 weeks of operators following the recommendations, with small steps (e.g. optical −1 °C, AFR −0.2 at a time), daily seed checks, and a daily M&V/CUSUM report. History alone can't prove 2% (daily noise ~1.8%), so ~30–40 trial days are needed.
+**Model 2, boost (nb05):** hourly integral controller on MB3: `bb(t) = bb(t-1) + 0.1 × (MB3_target − MB3) / 0.019 °C per kWh/h`, clipped to the historical boost range [114, 610] kWh/h. Default target = historical median MB3 (1,320.25 °C).
 
-**Expected levers** (hypotheses, each to be quantified in its notebook): exact NCV compensation (F3), excess-air reduction (F6), barrier-boost/gas split (F8), small optical setpoint reduction using seed headroom (F7), and running at the efficient-frontier heat for each draw band (F1/F2).
+**Back-test results, Jun–Aug 2026 (walk-forward, 85 usable days):**
+
+| Step | SFC saving vs actual | Draw-adjusted vs baseline (target −2%) |
+|---|---|---|
+| Actual operation | – | +1.14% |
+| Gas model (nb04, 15-min) | 0.91% | +0.21% |
+| + boost, MB3 at historical median (nb05) | 1.46% (pessimistic 1.11%) | −0.37% |
+| + air to historical P25 (estimate) | ~1.6% | **−0.52%** |
+| MB3 at historical P25 (still inside history) | 1.99% (pess. 1.33%) | needs trial |
+| Scenario B (MB3 below history) | 3.1–3.6% on paper | **not recommended**: MB3 outside history 60–80% of the time |
+
+**Remaining gap to −2% draw-adjusted: ~1.5 points.** This needs trial levers: an optical setpoint step of −1 to −2 °C (seed headroom), MB3 toward the historical P25, and higher draw / fewer line stops.
 
 ## 7. Notebook registry (update when you add or change a notebook)
 
 | Notebook | Purpose | Status | Key outputs |
 |---|---|---|---|
-| `notebooks/01_data_audit.ipynb` | Raw-data audit, cleaning rules, units, optical vs TC, SFC reconciliation, first lever signals | ✅ Done | `data/processed/ar_15min_clean.parquet` (37,920 rows), `daily_clean.parquet/.csv` (395 days); findings F2–F9 |
-| `notebooks/02_baseline_mv.ipynb` | Draw-normalized baseline, targets per draw band, Aug–Sep 2026 check | ⏳ Next | — |
-| `notebooks/03_hourly_eda.ipynb` | Hourly feature table, drivers, best days, AFR vs NCV, NCV-compensation saving | ⏳ | — |
-| `notebooks/04_gas_model.ipynb` | Model 1: required gas heat → NG = Q/NCV, AFR | ⏳ | — |
-| `notebooks/05_boost_model.ipynb` | Model 2: barrier boost from MB3, draw, cullet | ⏳ | — |
-| `notebooks/06_backtest_recommender.ipynb` | Joint recommender, guardrails, simulated SFC saving | ⏳ | — |
+| `01_data_audit.ipynb` | Raw-data audit, units, zero runs, optical vs TC, SFC reconciliation | ✅ | `data/processed/*` (via `data_prep`); our SFC = client SFC (median ratio 0.998) |
+| `02_optical_log_evidence.ipynb` | Proof of the optical date swap and 12-h clock, typos, draw doubling | ✅ | F11, rules `opt_day_ok`, `opt_hour_ok`, `ampm_months` |
+| `03_insights.ipynb` | Own baseline vs client, draw bands, M&V models A/B, ageing, lever analysis, savings bridge | ✅ | F1–F3, F6–F10, F12; M&V Model A (`E ~ draw + cullet`, baseline period) |
+| `04_gas_recommendation.ipynb` | Model 1: frontier tuning (τ, window), safety check, 15-min back-test, scenarios with/without limits, per band, draw-adjusted, Sep validation hook | ✅ | gas saving 0.91% SFC |
+| `05_boost_recommendation.ipynb` | Model 2: MB3 step response, controller tuning, scenarios A (inside history) / B (outside), combined gas + boost back-test, path to 2% | ✅ | combined 1.46% (+air ~1.6%); draw-adjusted −0.52% |
 
-**How to use processed data:** `pd.read_parquet('data/processed/ar_15min_clean.parquet')` (index `ts`) and `daily_clean.parquet` (index `date`). To rebuild them, run notebook 01 or `import data_prep as dp; q = dp.clean_15min(); d = dp.build_daily(q); dp.write_processed(q, d)`. Key daily columns: `sfc`, `energy_kcal`, `gas_kcal`, `elec_kcal`, `ncv_used`, `ncv_source`, `day_complete`, `base_*` (client values).
+Notebooks are executed with outputs saved. Rebuild the processed data with `q = dp.clean_15min(); d = dp.build_daily(q); h = dp.build_hourly(q); dp.write_processed(q, d, h)`.
 
-## 8. Open questions (ask the user / plant; record answers here)
+## 8. Open questions / answers
 
-| # | Question | Why it matters | Answer |
-|---|---|---|---|
-| Q1 | NG and secondary-air tags: are values **SCM per 15 min** (Σ96 matches daily SCM) or a rate? Instantaneous snapshot or 15-min average? | Units for recommendations; aliasing in F5 | |
-| Q2 | "Secondary gas" column is `SecondaryAirFlow`, and AFR = air/gas. Is it combustion air? Any other air (primary/atomising)? Is flue **O₂** measured? | AFR recommendation and excess-air lever | |
-| Q3 | Furnace type and **reversal time** (F5 suggests ~20–21 min) | Choose the model resolution, avoid aliasing | **Answered (user, 2026-10-04):** regenerative furnace with **two inlets/ports**. Each carries NG + secondary air; while one fires, the other works as exhaust, and they switch on the **20-min timer**. The operator sets the NG flow for the next firing period **anywhere in the 5-min window from minute 15 to 20**, not at exactly minute 15. |
-| Q4 | **Threshold limits** (Sheet1): NG min/max, barrier boost min/max, optical band, MB3 band, electrode/transformer limits | Hard constraints in the recommender | |
-| Q5 | **Sep 2026 draw** (missing) | SFC for Sep 2026 | **Answered:** client will send it. **Sep 2026 is the hold-out for testing/validation** before any trial. |
-| Q6 | OK to include boost (and melter boost) as an input to the gas model? | Boost replaces gas heat; without it, gas recommendations are biased | |
-| Q7 | Is shifting heat from gas to boost acceptable (cost)? Gas vs electricity price per Gcal | Gas/boost split | |
-| Q8 | Optical log: who records it and when? Missing days fall on days 1–12 of months (possible DD/MM swap) and there are duplicates. Can we get the raw log? | Optical is a model input | |
-| Q9 | Seed count definition (per what sample?) and whether 30 is the max spec | Quality guard-rail | |
-| Q11 | (Partly answered by Q3.) Does the 20 min include the changeover? Is the same NG flow set for both ports or a separate value per port? Does the DCS NG/air tag measure the common header (both ports) or one port? | Explains the ~105-min sawtooth; whether the recommendation is one value or one per port | |
-| Q10 | Target confirmation: absolute 1,544.8 vs draw-band targets vs draw-normalized; training period to include Aug–Sep 2026? | Success criterion | |
+| # | Question | Answer |
+|---|---|---|
+| Q1 | NG/air units | **Answered:** use the workbook values as they are; operator enters the same unit |
+| Q2 | Secondary air & O₂ | **Answered:** secondary air goes through the same 2 inlets; **no O₂ analyser** |
+| Q3 | Reversal | **Answered:** 2 ports, 20-min timer, one NG flow for both (common header), set in the minute 15–20 window |
+| Q4 | Threshold limits | **Answered for now:** use historical P1–P99 (nb04 §1). Replace when the plant gives official limits |
+| Q5 | Sep 2026 draw | Client will send it → validation month |
+| Q6 | Boost as gas-model input | **Answered:** gas recommendation uses the actual boost from the DB (boost is hourly, gas is 15-min) |
+| Q7 | Optical log | **Answered:** typed by hand. Errors proven in nb02. Still useful: the raw log with ISO dates and a 24-h clock would let us repair the history |
+| Q8 | Electricity vs gas cost | Analysed inside and outside the historical range (nb05); more boost raises SFC anyway |
+| Q9 | Target | **Answered:** per draw band or draw-adjusted |
+| Q10 | Official limits for MB3/optical bands and electrode limits; seed sample definition | Open |
+| Q11 | Trial approval: optical −1 °C steps, MB3 target toward P25 | Open (next step) |
 
 ## 9. Working rules
 
-- Never modify `data/raw/`. All cleaning goes in `src/data_prep.py`; notebooks import it (`sys.path.insert(0, '../src')`).
-- Timestamps are plant local time. Daily = calendar day 00:00–24:00, matching the SAP draw date (confirm the SAP day boundary).
-- **Time-based** train/test splits only. Prefer interpretable models (linear/quantile regression, GBM + SHAP).
-- Quality and limits are hard constraints. Never recommend a setpoint outside the plant thresholds.
-- Units: NG in SCM per 15 min, NCV in kcal/SCM, boosts in kWh per 15 min, energy in kcal/Gcal, draw in kg, SFC in kcal/kg.
+- Never modify `data/raw/`. All cleaning goes in `src/data_prep.py`, recommendation logic in `src/recommender.py`; notebooks import both (`sys.path.insert(0, '../src')`).
+- Don't use client workbook values as inputs. If one is used (for verification or as the target to beat), say so explicitly in the notebook.
+- **Time-based / walk-forward** evaluation only. Check calibration of any quantile model out of sample.
+- Control for **ageing** (month fixed effects or a time trend) before claiming any lever. F8 was wrong without it.
+- Limits are hard constraints. Anything outside the historical range is labelled "scenario B / extrapolation".
 - Charts: reference palette (blue `#2a78d6`, orange `#eb6834`), one y-axis per chart, recessive grid.
 - Environment: `pip install -r requirements.txt`.
 
@@ -150,10 +164,10 @@ Crown file: `dcs_60_ThermocoupleMelterCrown3TCMC3PVDB249DD202` → `crown_tc` (�
 ```
 CLAUDE.md                      this file (project memory)
 requirements.txt
-src/data_prep.py               loading + cleaning + daily SFC (single source of truth)
-notebooks/01_data_audit.ipynb  executed, with outputs
+src/data_prep.py               loading + cleaning + daily/hourly tables (single source of truth)
+src/recommender.py             Model 1 (gas) + Model 2 (boost) logic, limits, simulators
+notebooks/01..05_*.ipynb       executed, with outputs
 data/raw/                      client files as received (+ README.md)
-data/processed/                cleaned outputs written by notebook 01
-docs/01_methodology.md         earlier generic methodology (before the plant's 2-model design; sections on NCV logic still valid)
-docs/02_plant_team_data_request.md  earlier data request list
+data/processed/                cleaned outputs
+docs/                          earlier methodology and data-request notes (pre-DCS-data)
 ```
