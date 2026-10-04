@@ -45,9 +45,11 @@ AR_COLUMNS = {
     "SFC (kcal/kg)": "sfc_record",
 }
 
+NCV_SPIKE = 400                     # kcal/SCM jump vs ~2 h rolling median = glitch
+
 # Plausible ranges; values outside are sensor faults or typing errors -> NaN.
 VALID_RANGE = {
-    "ncv": (7000, 11500),        # 0 = meter not working
+    "ncv": (8500, 10500),        # 0 = meter not working; real gas stays ~8,800-10,450 (nb03 §1)
     "opt_temp": (1550, 1600),    # manual entries like 2576, 15757, 1474
     "mb_kwh": (1, 200),          # 0 = no reading, 538 = spike
     "bb_kwh": (1, 250),
@@ -94,6 +96,14 @@ def clean_15min(with_crown: bool = True) -> pd.DataFrame:
             bad = q[col].notna() & ~q[col].between(lo, hi)
             q[f"{col}_bad"] = bad
             q.loc[bad, col] = np.nan
+
+    # 2b. NCV spikes: a reading more than NCV_SPIKE away from the median of the
+    #     surrounding 9 readings (~2 h) is a meter glitch -> NaN. The same filter
+    #     must be used live (fall back to the last valid NCV).
+    med = q["ncv"].rolling(9, center=True, min_periods=3).median()
+    spike = (q["ncv"] - med).abs() > NCV_SPIKE
+    q["ncv_spike"] = spike
+    q.loc[spike, "ncv"] = np.nan
 
     # 3. Draw: the record doubles the SAP draw on two month-start days
     #    (2025-10-01, 2026-06-01). Detected as > 1.6x the median of the

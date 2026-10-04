@@ -14,7 +14,7 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
   SFC (kcal/kg) = [ Σ NG × NCV  +  (Σ Barrier_kWh + Σ Melter_kWh) × 860 ] / Draw_kg      (per day)
   ```
   Compute `NG × NCV` per interval, then sum. Never multiply daily NG by an average NCV.
-- **Client baseline:** 1 Sep 2025 – 31 Jul 2026, average daily SFC **1,576.3 kcal/kg** → target **1,544.8**. **We reproduced it from raw data: 1,576.4** (nb03).
+- **Client baseline:** 1 Sep 2025 – 31 Jul 2026, average daily SFC **1,576.3 kcal/kg** → target **1,544.8**. **We reproduced it from raw data: 1,576.6** (nb03).
 - **Success criterion (user, 2026-10-04):** per draw band (5-t bands, −2% each) **or** draw-adjusted (−2% vs baseline model at the same draw and cullet). Both are computed in nb03–nb05.
 
 ## 2. What the plant wants and how the furnace works
@@ -63,7 +63,7 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 
 1. **Duplicate timestamps** (5,472) differ only in `opt_temp`. Keep one row per timestamp, average optical, flag `opt_dup`.
 2. **Zeros/out-of-range → NaN** (`*_bad` flags):
-   - NCV 7,000–11,500
+   - NCV 8,500–10,500 **plus a spike filter** (> 400 kcal/SCM from the ~2 h rolling median → NaN, `ncv_spike`; 159 readings). Not 9,000: ~7% of genuine readings (Aug–Sep 2026) are 8,500–9,000 (nb03 §1b). Use the same filter live (fall back to the last valid NCV)
    - optical 1,550–1,600
    - melter boost 1–200
    - barrier boost 1–250
@@ -93,14 +93,14 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 | F7 | **Seeds:** P95 = 21, never above the spec of 30 on usable days. Best-energy days have fewer seeds; more energy and a hotter crown go with *more* seeds | nb03 §3b, §3e |
 | F8 | **CORRECTED:** barrier boost replaces only ~0.56 (frontier model) to ~0.81 (month FE) Gcal of gas per Gcal. **More boost raises SFC; less boost (MB3 held) lowers it** | nb03 §3c, nb04 §2 |
 | F9 | Cullet (16–20%) has no significant energy effect | nb03 §2 |
-| F10 | **MB3 is controlled by barrier boost:** +100 kWh/h → +1.9 °C (steady state, 6–12 h). Gas barely moves MB3. In Jun–Aug 2026, MB3 ran 1.5 °C above its historical median | nb03 §3d, nb05 |
+| F10 | **MB3 is controlled by barrier boost:** +100 kWh/h → +1.9 °C (steady state, 6–12 h); the same heat as gas → only +0.4 °C. Hourly data also shows operator feedback (boost cut when MB3 is high), so the response is estimated with a distributed-lag model. In Jun–Aug 2026, MB3 ran 1.5 °C above its historical median | nb03 §3d, nb05 |
 | F11 | **Optical log errors proven:** DD/MM ↔ MM/DD swap (all 36 missing days have day ≤ 12; 10/10 predicted swap targets carry duplicates, p ≈ 7e-4), and a 12-hour clock in 6 months of 2026. **Only optical is hit** because it is the only hand-typed source with text dates: in all 5,472 duplicated time stamps the other 12 columns are identical, and on optical-missing days every other column is 100% filled. Month-first parsing reproduces the pattern exactly (nb02 §3) | nb02 |
 | F12 | Best vs worst days (draw/age-adjusted): best days have less air/Mcal, −500 kWh/day melter boost, −0.5 °C MB3, steadier NCV, fewer seeds, the same optical | nb03 §3b |
 
 ## 6. Recommenders (implemented in `src/recommender.py`)
 
 **Model 1, gas (nb04):**
-1. Daily gas-heat target = walk-forward **quantile regression (τ = 0.25, last 45 usable days)**: `gas_Gcal ~ draw_t + barrier_Gcal + melter_Gcal`. Out-of-sample calibration: 24% of test days below the target (25% expected).
+1. Daily gas-heat target = walk-forward **quantile regression (τ = 0.25, last 45 usable days)**: `gas_Gcal ~ draw_t + barrier_Gcal + melter_Gcal`. Out-of-sample calibration: 24.7% of test days below the target (25% expected).
 2. Spread evenly over the day, with an optical trim of 0.29% heat per °C below target (operators' own historical response).
 3. `NG = heat per 15 min / latest NCV`.
 4. `AFR = 1.258 × NCV / 1000`.
@@ -113,13 +113,25 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 | Step | SFC saving vs actual | Draw-adjusted vs baseline (target −2%) |
 |---|---|---|
 | Actual operation | – | +1.14% |
-| Gas model (nb04, 15-min) | 0.91% | +0.21% |
-| + boost, MB3 at historical median (nb05) | 1.46% (pessimistic 1.11%) | −0.37% |
-| + air to historical P25 (estimate) | ~1.6% | **−0.52%** |
-| MB3 at historical P25 (still inside history) | 1.99% (pess. 1.33%) | needs trial |
-| Scenario B (MB3 below history) | 3.1–3.6% on paper | **not recommended**: MB3 outside history 60–80% of the time |
+| Gas model (nb04, 15-min) | 0.87% | +0.25% |
+| + boost, MB3 at historical median (nb05) | 1.38% (pessimistic 1.07%) | −0.29% |
+| + air to historical P25 (estimate) | ~1.5% | **−0.45%** |
+| MB3 at historical P25 (still inside history) | 1.88% (pess. 1.29%) | needs trial |
+| Scenario B (MB3 below history) | 2.9–3.4% on paper | **not recommended**: MB3 outside history 60–80% of the time |
 
-**Remaining gap to −2% draw-adjusted: ~1.5 points.** This needs trial levers: an optical setpoint step of −1 to −2 °C (seed headroom), MB3 toward the historical P25, and higher draw / fewer line stops.
+**Remaining gap to −2% draw-adjusted: ~1.55 points.** This needs trial levers: an optical setpoint step of −1 to −2 °C (seed headroom), MB3 toward the historical P25, and higher draw / fewer line stops.
+
+## 6b. What data trains the models (and what doesn't)
+
+| Model | Trained on | Rows | Not used for training |
+|---|---|---|---|
+| Gas target (nb04) | **Daily** rows of usable days: target = gas heat (Σ NG × valid NCV), inputs = draw, barrier boost, melter boost. Refitted every day on the **last 45 usable days** (walk-forward) | 38–45 days per fit (median 42); for the Jun–Aug 2026 test, 129 distinct days (17 Apr – 30 Aug 2026). Usable days in total: 316 | NCV-zero/missing days, spikes; **optical** (hand-typed, flat); **crown TC MC3**; cullet (no effect; captured by the window); client workbook |
+| Optical trim gain (nb04) | Hourly optical vs gas heat, **only hours with a trustworthy optical time stamp** (`opt_hour_ok`; months with the 12-h clock and duplicate slots excluded) | 3,302 hours | – |
+| Air target (nb04) | Historical P25 of daily air per Mcal (usable days) | 316 days | – |
+| Boost controller (nb05) | Hourly MB3, barrier boost and gas (distributed lag, 0–12 h) for the MB3 step response | ~8,400 hours | crown TC, optical |
+| Back-tests | 15-min data, Jun–Aug 2026 (8,092 recommendations) | 85 test days | Sep 2026 (waiting for draw) |
+
+**Crown thermocouple TC MC3 is not used to train any model.** It is used only for checks: the optical comparison (nb01), frontier-day temperatures (nb04 §3) and the historical limits table.
 
 ## 7. Notebook registry (update when you add or change a notebook)
 
@@ -127,9 +139,9 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 |---|---|---|---|
 | `01_data_audit.ipynb` | Raw-data audit, units, zero runs, optical vs TC, SFC reconciliation | ✅ | `data/processed/*` (via `data_prep`); our SFC = client SFC (median ratio 0.998) |
 | `02_optical_log_evidence.ipynb` | Why only optical is wrong (source/join tests A–B), raw Excel rows, parsing demo, proof of date swap and 12-h clock, typos, draw doubling | ✅ | F11, rules `opt_day_ok`, `opt_hour_ok`, `ampm_months` |
-| `03_insights.ipynb` | Own baseline vs client, draw bands, M&V models A/B, ageing, lever analysis, savings bridge | ✅ | F1–F3, F6–F10, F12; M&V Model A (`E ~ draw + cullet`, baseline period) |
-| `04_gas_recommendation.ipynb` | Model 1: frontier tuning (τ, window), safety check, 15-min back-test, scenarios with/without limits, per band, draw-adjusted, Sep validation hook | ✅ | gas saving 0.91% SFC |
-| `05_boost_recommendation.ipynb` | Model 2: MB3 step response, controller tuning, scenarios A (inside history) / B (outside), combined gas + boost back-test, path to 2% | ✅ | combined 1.46% (+air ~1.6%); draw-adjusted −0.52% |
+| `03_insights.ipynb` | Detailed, chart per insight: data coverage, NCV filter, own baseline, draw, ageing, NCV lag, **barrier boost ↔ MB3 (physics, step response, daily, substitution)**, air, seeds, best days, optical, savings waterfall, conclusions | ✅ | F1–F3, F6–F10, F12; M&V Model A (`E ~ draw + cullet`, baseline period) |
+| `04_gas_recommendation.ipynb` | Model 1: frontier tuning (τ, window), safety check, 15-min back-test, scenarios with/without limits, per band, draw-adjusted, Sep validation hook | ✅ | gas saving 0.87% SFC |
+| `05_boost_recommendation.ipynb` | Model 2: MB3 step response, controller tuning, scenarios A (inside history) / B (outside), combined gas + boost back-test, path to 2% | ✅ | combined 1.38% (+air ~1.5%); draw-adjusted −0.45%; writes `data/processed/path_to_2pct.csv` (read by nb03) |
 
 Notebooks are executed with outputs saved. Rebuild the processed data with `q = dp.clean_15min(); d = dp.build_daily(q); h = dp.build_hourly(q); dp.write_processed(q, d, h)`.
 
