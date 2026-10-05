@@ -112,6 +112,8 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 
 **Live use:** `rc.FinalRecommender().fit(d, q, h).recommend(inputs)` (T4 §5). Setpoints (NG, secondary air, AFR, boost) are clipped to historical P1–P99. The daily gas total is an outcome: it is flagged, not clipped. If NG is at its upper limit, boost is not lowered. `optical_prev24h` is still an input, used only for the guard-rail flag.
 
+**Back-test of live inputs (T4 §6):** `rc.walk_forward_history(d, h)` replays the full recommender walk-forward on every usable day from 1 Dec 2025 (cached in `data/processed/backtest_daily.parquet`; 292 days: SFC 1,583.4 → 1,569.8, −0.86%; draw-adjusted +0.47% → −0.40%; better than actual in every month, 0.3–1.9%). `rc.history_backtest(FR, d, q, INPUTS, BT)` (wrapped as `backtest_inputs(INPUTS)` in T4) finds similar days (draw ±1.5 t, NCV ±150, cullet ±1%, widened if < 10 days) and reports actual vs recommender SFC, draw-adjusted, band, today's expected SFC (includes today's ageing) and setpoints.
+
 **Model 2, boost (nb05; selection T3):** hourly integral controller on MB3: `bb(t) = bb(t-1) + 0.1 × (MB3_target − MB3) / 0.0194 °C per kWh/h`, clipped to [114, 610] kWh/h. Target = historical median MB3 (1,320.25 °C). No draw, cullet or melter-boost terms (T3 §3, §4).
 
 **Back-test results (walk-forward, daily scorecard T4; 15-min gas back-test nb04):**
@@ -168,7 +170,7 @@ Bands, Jun–Aug final: −0.62 / +1.23 / −0.26 / −0.15% (45–50 / 50–55 
 | `training/T1_gas_model_experiments.ipynb` | Gas inputs (barrier, melter, optical, crown TC, MB3, cullet) × model types × 2 folds; hourly test | ✅ | `training_gas_*.csv`; choice in §6 (optical dropped, F14) |
 | `training/T2_secondary_air_experiments.ipynb` | Secondary air: volume vs heat, 4 formulas, efficient target | ✅ | `training_air_targets.csv` |
 | `training/T3_boost_model_experiments.ipynb` | Does boost help; MB3 response variants (incl. optical); 4 policies, closed loop × 2 folds; **§4 melter boost** | ✅ | `training_boost_policies.csv`; F13 |
-| `training/T4_final_model_and_recommender.ipynb` | **Final**: trains `FinalRecommender` on all usable data; walk-forward scorecard (overall, 5-t bands, draw-adjusted A, ageing-adjusted B); all T1 candidates on both yardsticks; **§2c Sep 2026 validation**; setpoints vs historical limits; look-up tables; **live input cell (§5)** | ✅ | `T4_scorecard.csv`, `T4_scorecard_sep.csv`, `T4_band_pct.csv`, `T4_candidates_scorecard.csv` |
+| `training/T4_final_model_and_recommender.ipynb` | **Final**: trains `FinalRecommender` on all usable data; walk-forward scorecard (overall, 5-t bands, draw-adjusted A, ageing-adjusted B); all T1 candidates on both yardsticks; **§2c Sep 2026 validation**; setpoints vs historical limits; look-up tables; **live input cell (§5)**; **back-test of the inputs against history (§6)** | ✅ | `T4_scorecard.csv`, `T4_scorecard_sep.csv`, `T4_band_pct.csv`, `T4_candidates_scorecard.csv`, `backtest_daily.parquet` |
 
 Notebooks are executed with outputs saved. Run order after a data change: 01 → 02 → training T1–T3 → 04 → 05 → T4 → 03 (T3 reads T1's csv; nb05 reads nb04's air csv; nb03 reads nb05's waterfall file). Rebuild the processed data with `q = dp.clean_15min(); d = dp.build_daily(q); h = dp.build_hourly(q); dp.write_processed(q, d, h)`.
 
@@ -209,9 +211,11 @@ src/data_prep.py               loading + cleaning + daily/hourly tables (single 
 src/recommender.py             Model 1 (gas) + Model 2 (boost) logic, limits, simulators
 notebooks/01..05_*.ipynb       executed, with outputs
 notebooks/training/T1..T3      model-selection experiments (gas, secondary air, boost)
+notebooks/training/T4          final model, scorecards, live input cell + history back-test
 data/raw/                      client files as received (+ README.md); fixed_5 = corrected record used everywhere
 data/processed/                cleaned outputs
 docs/05_final_approach_and_trial_plan.md   plant-facing: approach, evidence, path to 2%, M&V, trial phases, guard-rails
 docs/06_model_training_and_selection.md    what was trained, why the final model, both yardsticks
+docs/07_full_explanation.md                plain-language explanation of everything: concepts, data, training, how SFC drops, notebook map, glossary
 docs/01-02                     earlier methodology and data-request notes (pre-DCS-data)
 ```

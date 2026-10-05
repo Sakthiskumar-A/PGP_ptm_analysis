@@ -325,3 +325,118 @@ class FinalRecommender:
         out["clipped?"] = ~np.isclose(out["model value"], out["recommended (within limits)"])
         out.attrs["flags"] = flags
         return out
+
+
+# ----------------------------------------------------------------- back-test: history replay + one set of inputs
+def walk_forward_history(d: pd.DataFrame, h: pd.DataFrame, start: str = "2025-12-01", ki: float = 0.1) -> pd.DataFrame:
+    """Replay the full recommender on every usable day from `start`, walk-forward.
+
+    Each day: gas target from earlier days only (with that day's recommended boost), barrier boost from
+    the MB3 controller replayed hour by hour from `start` (target = historical median MB3, limits P1-P99),
+    actual melter boost, and the air trim (energy effect of moving air/Mcal to its rolling P25 target).
+    Returns one row per day with actual and recommended energy, SFC and draw-adjusted % (Model A).
+    Takes a minute or two; T4 caches the result in data/processed/backtest_daily.parquet.
+    """
+    u = prepare_gas_features(d[d["usable"]])
+    u["E_g"] = u["energy_kcal"] / 1e6
+    days = u.index[u.index >= start]
+    step = boost_step_response(h, 12)
+    bb_lim = tuple(h["bb_kwh"].quantile([0.01, 0.99]))
+    sim = simulate_boost_controller(h.loc[start:], step, float(h["mb3_temp"].median()), ki=ki, bb_limits=bb_lim)
+    bb_day = sim["bb_rec"].groupby(sim.index.normalize()).mean() * 24                      # kWh/day
+    base = u[u["in_baseline"]]
+    mA = smf.ols("E_g ~ draw_t + cullet_pct", base).fit()
+    mB = smf.ols("E_g ~ draw_t + cullet_pct + age_m", base).fit()
+    ma = smf.ols("r ~ air_per_mcal", u.assign(r=u["E_g"] - mB.predict(u))).fit()
+    rows = []
+    for day in days:
+        x = u.loc[day]
+        bb = bb_day.get(day, np.nan)
+        if np.isnan(bb):
+            continue
+        gas_rec = daily_gas_target(u, day, {"bb_g": bb * KCAL_PER_KWH / 1e6})
+        air_gain = ma.params["air_per_mcal"] * max(x["air_per_mcal"] - air_target(u, day), 0.0)
+        e_rec = gas_rec + bb * KCAL_PER_KWH / 1e6 + x["mb_g"] - air_gain
+        e_exp = float(mA.predict(u.loc[[day]]).iloc[0])
+        rows.append(dict(date=day, draw_t=x["draw_t"], ncv=x["ncv"], cullet_pct=x["cullet_pct"],
+                         sfc_actual=x["sfc"], sfc_rec=e_rec * 1e6 / x["draw_kg"],
+                         E_actual=x["E_g"], E_rec=e_rec, E_expected_A=e_exp,
+                         draw_adj_actual=100 * (x["E_g"] / e_exp - 1), draw_adj_rec=100 * (e_rec / e_exp - 1),
+                         gas_actual=x["gas_g"], gas_rec=gas_rec, bb_actual_kwh_h=x["bb_kwh"] / 24, bb_rec_kwh_h=bb / 24,
+                         mb3=x["mb3_temp"], air_per_mcal=x["air_per_mcal"], seeds=x["seed_count"]))
+    return pd.DataFrame(rows).set_index("date")
+
+
+def history_backtest(fr: "FinalRecommender", d: pd.DataFrame, q: pd.DataFrame, inputs: dict, bt: pd.DataFrame,
+                     draw_tol: float = 1.5, ncv_tol: float = 150.0, cullet_tol: float = 1.0,
+                     min_days: int = 10) -> dict:
+    """Back-test one set of live inputs against history.
+
+    1. Similar days = replayed days (`bt`, from walk_forward_history) with draw within +-draw_tol t, daily
+       NCV within +-ncv_tol kcal/SCM and cullet within +-cullet_tol %. With fewer than `min_days`, the window
+       is widened (x1.5, x2, x3) and that is reported.
+    2. On those days: average ACTUAL SFC vs average SFC had the recommender been followed (walk-forward:
+       each day only used earlier days), plus the draw-adjusted % and the draw band's baseline and target.
+    3. Today's recommendation: expected SFC if followed all day (it includes today's furnace age, so it is
+       not directly comparable with older days; the like-for-like comparison is point 2).
+    4. Setpoints on the similar days (all, and the best 25% by SFC) next to the recommended values.
+    """
+    rec = fr.recommend(inputs)
+    bb_rec = float(rec.iloc[4, 2])                         # kWh/h, next hour (assumed held for the day)
+    mb_day = inputs["mb_kwh_last_hour"] * 24
+    e_now = fr.gas_target(inputs["date"], inputs["draw_t"], bb_rec * 24, mb_day) + (bb_rec * 24 + mb_day) * KCAL_PER_KWH / 1e6
+    sfc_now = e_now * 1e6 / (inputs["draw_t"] * 1000)
+
+    for mult in (1.0, 1.5, 2.0, 3.0):
+        m = ((bt["draw_t"] - inputs["draw_t"]).abs() <= draw_tol * mult) \
+            & ((bt["ncv"] - inputs["ncv"]).abs() <= ncv_tol * mult) \
+            & ((bt["cullet_pct"] - inputs["cullet_pct"]).abs() <= cullet_tol * mult)
+        if m.sum() >= min_days:
+            break
+    sim = bt[m].copy()
+    rule = (f"draw {inputs['draw_t'] - draw_tol * mult:.1f}-{inputs['draw_t'] + draw_tol * mult:.1f} t, "
+            f"NCV {inputs['ncv'] - ncv_tol * mult:.0f}-{inputs['ncv'] + ncv_tol * mult:.0f} kcal/SCM, "
+            f"cullet {inputs['cullet_pct'] - cullet_tol * mult:.1f}-{inputs['cullet_pct'] + cullet_tol * mult:.1f}%"
+            + ("" if mult == 1.0 else f"  (window widened x{mult:g}: too few days)"))
+
+    u = d[d["usable"]]
+    base = u[u["in_baseline"]]
+    bins, labels = [45, 50, 55, 60, 65], ["45-50", "50-55", "55-60", "60-65"]
+    band_base = base.groupby(pd.cut(base["draw_t"], bins, labels=labels, include_lowest=True), observed=True)["sfc"].mean()
+    band = pd.cut([inputs["draw_t"]], bins, labels=labels, include_lowest=True)[0]
+    bb_ = band_base.get(band, np.nan)
+    e_exp_now = 53.55 + 0.605 * inputs["draw_t"] + 0.123 * inputs["cullet_pct"]       # Model A (CLAUDE.md §6)
+
+    n = len(sim)
+    summary = pd.Series({
+        "similar historical days": n,
+        "period covered": f"{sim.index.min().date()} to {sim.index.max().date()}" if n else "-",
+        "average draw (t/day) | NCV": f"{sim['draw_t'].mean():.1f} | {sim['ncv'].mean():.0f}" if n else "-",
+        "1. ACTUAL average SFC on those days (kcal/kg)": sim["sfc_actual"].mean(),
+        "2. RECOMMENDER on the same days, walk-forward (kcal/kg)": sim["sfc_rec"].mean(),
+        "   saving vs actual (%)": 100 * (1 - sim["sfc_rec"].mean() / sim["sfc_actual"].mean()) if n else np.nan,
+        "   days where the recommender was better (%)": 100 * (sim["sfc_rec"] < sim["sfc_actual"]).mean() if n else np.nan,
+        "3. draw-adjusted vs baseline: actual (%)": sim["draw_adj_actual"].mean(),
+        "   draw-adjusted vs baseline: recommender (%)": sim["draw_adj_rec"].mean(),
+        f"4. band {band} t: baseline SFC | -2% target": f"{bb_:.1f} | {bb_ * 0.98:.1f}",
+        "   actual vs band baseline (%)": 100 * (sim["sfc_actual"].mean() / bb_ - 1) if n else np.nan,
+        "   recommender vs band baseline (%)": 100 * (sim["sfc_rec"].mean() / bb_ - 1) if n else np.nan,
+        "5. TODAY: expected SFC if today's recommendation is followed all day": sfc_now,
+        "   today, draw-adjusted vs baseline (%)": 100 * (e_now / e_exp_now - 1),
+    })
+
+    qq = q[q.index.normalize().isin(sim.index)]
+    near = qq[(qq["ncv"] - inputs["ncv"]).abs() <= ncv_tol * mult]
+    best_days = sim.index[sim["sfc_actual"] <= sim["sfc_actual"].quantile(0.25)]
+    qb, nb_ = qq[qq.index.normalize().isin(best_days)], near[near.index.normalize().isin(best_days)]
+
+    def col(xq, xall):
+        return [xq["ng_scm"].mean(), xq["sec_air"].mean(), xq["afr"].mean(), (xall["bb_kwh"] * 4).mean(), xall["mb3_temp"].mean()]
+
+    setp = pd.DataFrame({"history: similar days (actual)": col(near, qq),
+                         "history: best 25% of similar days": col(nb_, qb),
+                         "recommended now": [rec.iloc[1, 2], rec.iloc[2, 2], rec.iloc[3, 2], bb_rec, fr.mb3_target]},
+                        index=["NG (per 15 min, at a similar NCV)", "secondary air (per 15 min)", "air-fuel ratio",
+                               "barrier boost (kWh/h)", "MB3 (°C; recommended = target)"])
+    return {"summary": summary, "setpoints": setp, "similar_days": sim, "rule": rule,
+            "band_baseline": bb_, "recommendation": rec}
