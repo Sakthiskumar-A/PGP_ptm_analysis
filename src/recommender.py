@@ -2,12 +2,13 @@
 
 Model 1 (gas, every 15 min)  -- chosen in notebooks/training/T1, T2:
     1. Daily gas-heat target: OLS on ALL past usable days
-       gas_Gcal ~ draw_t + barrier_Gcal + melter_Gcal + age_m + optical(previous day)
+       gas_Gcal ~ draw_t + barrier_Gcal + melter_Gcal + age_m
        plus a conformal shift = 25th percentile of the last 45 days' residuals
        (target = what the efficient quarter of recent comparable days needed).
-       Optical history is gap-filled from the crown thermocouple + rolling offset.
-    2. Spread evenly over the day (steady heat). No separate optical trim: the
-       crown effect is inside the model.
+       Optical (previous day) was dropped with the corrected data: no gain in T1,
+       and it mis-calibrated the Sep 2026 validation (nb04 §8). Optical stays a
+       live input, checked against its historical band (guard-rail), not a model input.
+    2. Spread evenly over the day (steady heat). No optical trim.
     3. NG setpoint = heat per 15 min / latest NCV  -> exact NCV compensation.
        Units: same as the workbook column the operator enters (no conversion).
     4. Secondary air = air-per-Mcal target x heat / 1000, AFR = air / NG.
@@ -47,8 +48,10 @@ def historical_limits(q15: pd.DataFrame, h: pd.DataFrame, lo=0.01, hi=0.99) -> p
 
 # ----------------------------------------------------------------- Model 1
 GAS_FORMULA_QR = "gas_g ~ draw_t + bb_g + mb_g"                       # first version (rolling QR)
-GAS_FORMULA = "gas_g ~ draw_t + bb_g + mb_g + age_m + opt_f_prev"     # chosen in T1
-GAS_FEATURES = ["draw_t", "bb_g", "mb_g", "age_m", "opt_f_prev"]
+GAS_FORMULA = "gas_g ~ draw_t + bb_g + mb_g + age_m"                  # chosen (T1 + Sep 2026 check)
+GAS_FEATURES = ["draw_t", "bb_g", "mb_g", "age_m"]
+GAS_FORMULA_OPT = GAS_FORMULA + " + opt_f_prev"                         # previous choice, kept for comparison
+GAS_FEATURES_OPT = GAS_FEATURES + ["opt_f_prev"]
 AGE_ORIGIN = pd.Timestamp("2025-09-01")
 
 
@@ -81,8 +84,9 @@ def daily_gas_target(d_usable: pd.DataFrame, day, overrides: dict | None = None,
     """Gas heat target (Gcal/day) for `day`, using only days before it.
 
     method="ols_conformal" (chosen): OLS on all past days + conformal shift from
-    the last `window` days. method="qr_rolling": first version, quantile
-    regression on the last `window` days (kept for comparison).
+    the last `window` days. method="ols_conformal_opt": the same with previous-day
+    optical (the earlier choice). method="qr_rolling": first version, quantile
+    regression on the last `window` days. The last two are kept for comparison.
     `overrides` replaces inputs of the day (e.g. {"bb_g": recommended boost}).
     """
     d = prepare_gas_features(d_usable)
@@ -96,9 +100,10 @@ def daily_gas_target(d_usable: pd.DataFrame, day, overrides: dict | None = None,
             tr = hist[hist.index >= pd.Timestamp(day) - pd.Timedelta(days=window)]
             m = smf.quantreg(GAS_FORMULA_QR, tr).fit(q=tau, max_iter=5000)
             return float(m.predict(x).iloc[0])
-        hist = hist.dropna(subset=GAS_FEATURES + ["gas_g"])
+        formula, feats = (GAS_FORMULA_OPT, GAS_FEATURES_OPT) if method == "ols_conformal_opt" else (GAS_FORMULA, GAS_FEATURES)
+        hist = hist.dropna(subset=feats + ["gas_g"])
         rec = hist[hist.index >= pd.Timestamp(day) - pd.Timedelta(days=window)]
-        m = smf.ols(GAS_FORMULA, hist).fit()
+        m = smf.ols(formula, hist).fit()
         shift = float(np.quantile(rec["gas_g"] - m.predict(rec), tau))
         return float(m.predict(x).iloc[0]) + shift
 
@@ -270,16 +275,16 @@ class FinalRecommender:
         }
         return self
 
-    def gas_target(self, date, draw_t, bb_kwh_day, mb_kwh_day, optical_prev24h) -> float:
+    def gas_target(self, date, draw_t, bb_kwh_day, mb_kwh_day) -> float:
         x = pd.DataFrame([{"draw_t": draw_t, "bb_g": bb_kwh_day * KCAL_PER_KWH / 1e6,
                            "mb_g": mb_kwh_day * KCAL_PER_KWH / 1e6,
-                           "age_m": (pd.Timestamp(date) - AGE_ORIGIN).days / 30.44,
-                           "opt_f_prev": optical_prev24h}])
+                           "age_m": (pd.Timestamp(date) - AGE_ORIGIN).days / 30.44}])
         return float(self.gas_model.predict(x).iloc[0]) + self.conformal_shift
 
     def recommend(self, inputs: dict, mb3_target: float | None = None, ki: float = 0.1) -> pd.DataFrame:
         """inputs: date, ncv, draw_t, cullet_pct, optical_prev24h, bb_kwh_last_hour,
-        mb_kwh_last_hour, mb3_now. Boost/melter last hour are kWh per hour (read from DB)."""
+        mb_kwh_last_hour, mb3_now. Boost/melter last hour are kWh per hour (read from DB).
+        optical_prev24h is a guard-rail: flagged when outside its historical band, not a model input."""
         L = self.limits
         flags = []
         for key, lim_key in [("ncv", "ncv"), ("draw_t", "draw_t"), ("optical_prev24h", "opt_temp"), ("mb3_now", "mb3_temp")]:
@@ -287,7 +292,7 @@ class FinalRecommender:
             if not (lo <= inputs[key] <= hi):
                 flags.append(f"input {key}={inputs[key]} outside history [{lo:.0f}, {hi:.0f}]")
         target = self.gas_target(inputs["date"], inputs["draw_t"], inputs["bb_kwh_last_hour"] * 24,
-                                 inputs["mb_kwh_last_hour"] * 24, inputs["optical_prev24h"])
+                                 inputs["mb_kwh_last_hour"] * 24)
         # Daily gas heat is an outcome, not a setpoint: not clipped, only flagged.
         target_c = target
         if not (L["gas_day_gcal"][0] <= target <= L["gas_day_gcal"][1]):

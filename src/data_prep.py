@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
 PROCESSED = ROOT / "data" / "processed"
 
-AR_FILE = RAW / "Analytical_Record_Creation_EE_60TPD_updated-2.xlsx"
+AR_FILE = RAW / "Analytical_Record_Creation_fixed_5.xlsx"            # revised file (2026-10-05): used for everything
+AR_FILE_OLD = RAW / "Analytical_Record_Creation_EE_60TPD_updated-2.xlsx"  # first file: kept only as evidence (nb02)
 CROWN_FILE = RAW / "DCS_60_TPD_MelterCrown3.xlsx"
 BASELINE_FILE = RAW / "SFC_60_TPD_Baseline_Calculation_Sep-25_to_Jul-26_updated.xlsx"
 
@@ -41,7 +42,8 @@ AR_COLUMNS = {
     "Air_Fuel_Ratio": "afr",
     "Seed Count": "seed_count",
     "Seed Count Specs": "seed_spec",
-    "MB51_Quantity_KG (Draw)": "draw_kg",
+    "MB51_Quantity_KG (Draw)": "draw_kg",    # old file
+    "Daily Draw": "draw_kg",                 # revised file
     "SFC (kcal/kg)": "sfc_record",
 }
 
@@ -73,17 +75,20 @@ def load_crown_tc_1min() -> pd.Series:
     return c.where(c.between(lo, hi))
 
 
-def load_ar_raw() -> pd.DataFrame:
-    a = pd.read_excel(AR_FILE, sheet_name="result")
+def load_ar_raw(old: bool = False) -> pd.DataFrame:
+    """Analytical record, sheet `result`. old=True loads the first file (optical
+    date errors, no Sep 2026 draw) for the evidence notebook nb02."""
+    a = pd.read_excel(AR_FILE_OLD if old else AR_FILE, sheet_name="result")
     return a.rename(columns=AR_COLUMNS)
 
 
-def clean_15min(with_crown: bool = True) -> pd.DataFrame:
+def clean_15min(with_crown: bool = True, old: bool = False) -> pd.DataFrame:
     """One clean row per 15-min timestamp, with *_bad / quality flags."""
-    a = load_ar_raw()
+    a = load_ar_raw(old)
 
     # 1. Duplicate timestamps differ only in opt_temp (date swap + 12-h clock in
     #    the manual optical log, nb02) -> average it, keep the rest, flag it.
+    #    The corrected file has none; the rule (and the optical flags below) stay as guards.
     num = [c for c in a.columns if c not in ("ts", "seed_spec")]
     q = a.groupby("ts")[num].mean()
     q["seed_spec"] = a.groupby("ts")["seed_spec"].first()
