@@ -172,7 +172,10 @@ Bands, Jun–Aug final: −0.62 / +1.23 / −0.26 / −0.15% (45–50 / 50–55 
 | `training/T3_boost_model_experiments.ipynb` | Does boost help; MB3 response variants (incl. optical); 4 policies, closed loop × 2 folds; **§4 melter boost** | ✅ | `training_boost_policies.csv`; F13 |
 | `training/T4_final_model_and_recommender.ipynb` | **Final**: trains `FinalRecommender` on all usable data; walk-forward scorecard (overall, 5-t bands, draw-adjusted A, ageing-adjusted B); all T1 candidates on both yardsticks; **§2c Sep 2026 validation**; setpoints vs historical limits; look-up tables; **live input cell (§5)**; **back-test of the inputs against history (§6)** | ✅ | `T4_scorecard.csv`, `T4_scorecard_sep.csv`, `T4_band_pct.csv`, `T4_candidates_scorecard.csv`, `backtest_daily.parquet` |
 
-Notebooks are executed with outputs saved. Run order after a data change: 01 → 02 → training T1–T3 → 04 → 05 → T4 → 03 (T3 reads T1's csv; nb05 reads nb04's air csv; nb03 reads nb05's waterfall file). Rebuild the processed data with `q = dp.clean_15min(); d = dp.build_daily(q); h = dp.build_hourly(q); dp.write_processed(q, d, h)`.
+| `client/01_insights_path_to_target.ipynb` | **Client deliverable:** glossary, insights with charts (baseline, draw, draw-adjusted, ageing, NCV lag, boost ↔ MB3, air, seeds, efficient days), history replay, bands, path to −2%, trial plan and M&V | ✅ | charts via `client/report.py` |
+| `client/02_model_training_and_recommender.ipynb` | **Client deliverable:** data rules, walk-forward testing, gas candidates and inputs, final equation with worked example, target vs actual, air, boost model and policies, melter-boost check, scorecards, limits, **recommendation function + look-up tables + `backtest_inputs`** | ✅ | uses `FinalRecommender`, `history_backtest` |
+
+Notebooks are executed with outputs saved. Client notebooks are rebuilt after T4 (they read `backtest_daily.parquet` and the training CSVs). Run order after a data change: 01 → 02 → training T1–T3 → 04 → 05 → T4 → 03 (T3 reads T1's csv; nb05 reads nb04's air csv; nb03 reads nb05's waterfall file). Rebuild the processed data with `q = dp.clean_15min(); d = dp.build_daily(q); h = dp.build_hourly(q); dp.write_processed(q, d, h)`.
 
 ## 8. Open questions / answers
 
@@ -217,5 +220,6 @@ data/processed/                cleaned outputs
 docs/05_final_approach_and_trial_plan.md   plant-facing: approach, evidence, path to 2%, M&V, trial phases, guard-rails
 docs/06_model_training_and_selection.md    what was trained, why the final model, both yardsticks
 docs/07_full_explanation.md                plain-language explanation of everything: concepts, data, training, how SFC drops, notebook map, glossary
+client/                        client deliverables: 01 insights → target, 02 training + recommender (report.py = chart helpers)
 docs/01-02                     earlier methodology and data-request notes (pre-DCS-data)
 ```
