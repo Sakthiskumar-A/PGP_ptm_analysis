@@ -1,0 +1,10 @@
+,item,lower limit (P1),upper limit (P99)
+ng_scm,NG setpoint (per 15 min),73.85850500623334,96.34293602333332
+afr,Air-fuel ratio,10.988572775462954,13.441243893747892
+bb_kwh_h,Barrier boost (kWh/h),114.3,609.7999999999993
+mb3_temp,MB3 bottom temperature (degC),1316.139341215,1325.510117155
+opt_temp,Optical crown temperature (degC),1568.0,1578.0
+ncv,NCV accepted (kcal/SCM),8500.0,10500.0
+draw_t,Draw (t/day),49.09716,62.21804
+sec_air,Secondary air (per 15 min),920.5145253233333,1104.224774186667
+gas_day_gcal,"Daily gas heat (Gcal/day, flag only)",72.53568393828455,80.90296428157741

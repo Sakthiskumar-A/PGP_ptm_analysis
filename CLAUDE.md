@@ -177,6 +177,9 @@ Bands, Jun–Aug final: −0.62 / +1.23 / −0.26 / −0.15% (45–50 / 50–55 
 | `client/01_insights_path_to_target.ipynb` | **Client deliverable:** glossary, insights with charts (baseline, draw, draw-adjusted, ageing, NCV lag, boost ↔ MB3, air, seeds, efficient days), history replay, bands, path to −2%, trial plan and M&V | ✅ | charts via `client/report.py` |
 | `client/02_model_training_and_recommender.ipynb` | **Client deliverable:** data rules, walk-forward testing, gas candidates and inputs, final equation with worked example, target vs actual, air, boost model and policies, melter-boost check, scorecards, limits, **recommendation function + look-up tables + `backtest_inputs`** | ✅ | uses `FinalRecommender`, `history_backtest` |
 
+| `client/databricks/01_training_sfc_model.ipynb` | **Databricks training job**, self-contained (pandas/numpy only): reads `input/analytical_record_15min.csv` (or parquet), cleans, builds daily/hourly, trains gas + boost + limits + M&V constants, checks, writes `output/sfc_recommender_latest.json` (same schema as `FinalRecommender.to_dict`; reproduces `models/recommender_latest.json` to 1e-13) | ✅ | `client/databricks/output/*` |
+| `client/databricks/02_inference_recommendation_email.ipynb` | **Databricks inference job**: loads the model, latest plant values (or manual), setpoints + historical-limit check + data-freshness flags, HTML e-mail via the plant Logic App (`SEND_MAIL=False` by default), appends `output/recommendation_log.csv` | ✅ | e-mail preview |
+
 Notebooks are executed with outputs saved. Client notebooks are rebuilt after T4 (they read `backtest_daily.parquet` and the training CSVs). Run order after a data change: 01 → 02 → training T1–T3 → 04 → 05 → T4 → 03 (T3 reads T1's csv; nb05 reads nb04's air csv; nb03 reads nb05's waterfall file). Rebuild the processed data with `q = dp.clean_15min(); d = dp.build_daily(q); h = dp.build_hourly(q); dp.write_processed(q, d, h)`.
 
 ## 8. Open questions / answers
@@ -227,5 +230,6 @@ service/                       reference FastAPI backend (app.py, requirements.t
 src/train_model.py             retraining pipeline
 docs/08_developer_guide_backend.md         developers: model I/O, math, test vectors, API, live comparison, retraining, ageing
 client/                        client deliverables: 01 insights → target, 02 training + recommender (report.py = chart helpers)
+client/databricks/              Databricks jobs: 01 training (input/ → output/), 02 inference + e-mail
 docs/01-02                     earlier methodology and data-request notes (pre-DCS-data)
 ```
