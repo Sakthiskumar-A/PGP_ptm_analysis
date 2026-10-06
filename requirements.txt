@@ -1,0 +1,10 @@
+pandas>=2.0
+numpy
+openpyxl
+pyarrow
+matplotlib
+scikit-learn
+statsmodels
+lightgbm
+shap
+jupyter

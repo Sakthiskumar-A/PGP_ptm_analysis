@@ -1,0 +1,8 @@
+step,% vs draw-adjusted baseline
+"Jun-Aug 2026 actual, draw-adjusted vs baseline",1.14
+"Gas model (frontier + exact NCV compensation), nb04",-0.72
+"Barrier boost to hold MB3 at historical median, nb05",-0.41
+"Air per Mcal at rolling P25 (estimate), nb04",-0.17
+= Result with all data-proven levers,-0.16
+Target,-2.0
+Remaining gap (needs trial levers / draw),-1.84
