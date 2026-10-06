@@ -40,8 +40,9 @@ def historical_limits(q15: pd.DataFrame, h: pd.DataFrame, lo=0.01, hi=0.99) -> p
         "bb_kwh (per hour)": h["bb_kwh"],
         "opt_temp (°C)": q15["opt_temp"],
         "mb3_temp (°C)": q15["mb3_temp"],
-        "crown_tc (°C)": q15["crown_tc"],
     }
+    if "crown_tc" in q15:                     # optional: not a model input
+        rows["crown_tc (°C)"] = q15["crown_tc"]
     return pd.DataFrame({k: v.quantile([lo, 0.5, hi]).to_numpy() for k, v in rows.items()},
                         index=[f"P{int(lo*100)}", "median", f"P{int(hi*100)}"]).T
 
@@ -73,8 +74,10 @@ def prepare_gas_features(d: pd.DataFrame) -> pd.DataFrame:
     d = add_gcal_columns(d)
     d["age_m"] = (d.index - AGE_ORIGIN).days / 30.44
     opt = d["opt_temp"].where(d["opt_day_ok"].astype(bool))
-    off = (opt - d["crown_tc"]).rolling(30, min_periods=5).median().ffill().bfill()
-    d["opt_f"] = opt.fillna(d["crown_tc"] + off)
+    if "crown_tc" in d:                                          # crown TC is optional (not a model input)
+        off = (opt - d["crown_tc"]).rolling(30, min_periods=5).median().ffill().bfill()
+        opt = opt.fillna(d["crown_tc"] + off)
+    d["opt_f"] = opt
     d["opt_f_prev"] = d["opt_f"].shift(1)
     return d
 
@@ -248,12 +251,18 @@ class FinalRecommender:
     fit(d, q, h)  -> trains the gas target model, air target, MB3 gain and limits.
     recommend(inputs) -> NG, secondary air, AFR (per 15 min) and barrier boost (next hour),
                          every value checked against the historical P1-P99 limits.
+    save(path) / FinalRecommender.load(path) -> portable JSON model file (only numbers; no
+                         statsmodels object is needed to serve recommendations).
     """
+    MODEL_SCHEMA = 1
+    ki = 0.1
 
     def fit(self, d: pd.DataFrame, q: pd.DataFrame, h: pd.DataFrame, window: int = 45, tau: float = 0.25):
         u = prepare_gas_features(d[d["usable"]]).dropna(subset=GAS_FEATURES + ["gas_g"])
         self.trained_until = u.index.max()
         self.gas_model = smf.ols(GAS_FORMULA, u).fit()
+        self.gas_params = {k: float(v) for k, v in self.gas_model.params.items()}
+        self.n_days = int(self.gas_model.nobs)
         rec = u[u.index > self.trained_until - pd.Timedelta(days=window)]
         self.conformal_shift = float(np.quantile(rec["gas_g"] - self.gas_model.predict(rec), tau))
         apm = d.loc[d["usable"], "air_per_mcal"].dropna()
@@ -273,15 +282,65 @@ class FinalRecommender:
             "sec_air": tuple(q["sec_air"].quantile([0.01, 0.99])),
             "gas_day_gcal": tuple(u["gas_g"].quantile([0.01, 0.99])),
         }
+        # M&V yardsticks: fitted on the fixed baseline period only, so they do not move on retraining
+        base = u[u["in_baseline"]].assign(E_g=lambda x: x["energy_kcal"] / 1e6)
+        self.mv_model_a = {k: float(v) for k, v in smf.ols("E_g ~ draw_t + cullet_pct", base).fit().params.items()}
+        bands = pd.cut(base["draw_t"], [45, 50, 55, 60, 65], labels=["45-50", "50-55", "55-60", "60-65"], include_lowest=True)
+        self.band_baseline = {str(k): float(v) for k, v in base.groupby(bands, observed=True)["sfc"].mean().items()}
         return self
 
-    def gas_target(self, date, draw_t, bb_kwh_day, mb_kwh_day) -> float:
-        x = pd.DataFrame([{"draw_t": draw_t, "bb_g": bb_kwh_day * KCAL_PER_KWH / 1e6,
-                           "mb_g": mb_kwh_day * KCAL_PER_KWH / 1e6,
-                           "age_m": (pd.Timestamp(date) - AGE_ORIGIN).days / 30.44}])
-        return float(self.gas_model.predict(x).iloc[0]) + self.conformal_shift
+    # ---- portable model file
+    def to_dict(self) -> dict:
+        return {
+            "schema": self.MODEL_SCHEMA,
+            "created_at": pd.Timestamp.now().isoformat(timespec="seconds"),
+            "trained_until": str(pd.Timestamp(self.trained_until).date()),
+            "n_training_days": self.n_days,
+            "gas": {"formula": GAS_FORMULA, "coefficients": self.gas_params, "conformal_shift": self.conformal_shift,
+                    "age_origin": str(AGE_ORIGIN.date()), "days_per_month": 30.44, "intervals_per_day": 96,
+                    "kcal_per_kwh": KCAL_PER_KWH},
+            "air": {"air_per_mcal": self.air_per_mcal},
+            "boost": {"mb3_target": self.mb3_target, "mb3_gain_degC_per_kwh_h": self.mb3_gain, "ki": self.ki},
+            "limits": {k: [float(v[0]), float(v[1])] for k, v in self.limits.items()},
+            "mv": {"model_a": self.mv_model_a, "band_baseline_sfc": self.band_baseline,
+                   "client_baseline_sfc": 1576.3, "client_target_sfc": 1544.8},
+        }
 
-    def recommend(self, inputs: dict, mb3_target: float | None = None, ki: float = 0.1) -> pd.DataFrame:
+    @classmethod
+    def from_dict(cls, m: dict) -> "FinalRecommender":
+        fr = cls()
+        fr.trained_until = pd.Timestamp(m["trained_until"])
+        fr.n_days = m["n_training_days"]
+        fr.gas_model = None
+        fr.gas_params = dict(m["gas"]["coefficients"])
+        fr.conformal_shift = float(m["gas"]["conformal_shift"])
+        fr.air_per_mcal = float(m["air"]["air_per_mcal"])
+        fr.mb3_target = float(m["boost"]["mb3_target"])
+        fr.mb3_gain = float(m["boost"]["mb3_gain_degC_per_kwh_h"])
+        fr.ki = float(m["boost"].get("ki", 0.1))
+        fr.limits = {k: tuple(v) for k, v in m["limits"].items()}
+        fr.mv_model_a = dict(m["mv"]["model_a"])
+        fr.band_baseline = dict(m["mv"]["band_baseline_sfc"])
+        return fr
+
+    def save(self, path) -> None:
+        import json
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    @classmethod
+    def load(cls, path) -> "FinalRecommender":
+        import json
+        with open(path) as f:
+            return cls.from_dict(json.load(f))
+
+    def gas_target(self, date, draw_t, bb_kwh_day, mb_kwh_day) -> float:
+        """Daily gas-heat target (Gcal/day). Furnace age is computed from the date, so it advances by itself."""
+        x = {"Intercept": 1.0, "draw_t": draw_t, "bb_g": bb_kwh_day * KCAL_PER_KWH / 1e6,
+             "mb_g": mb_kwh_day * KCAL_PER_KWH / 1e6, "age_m": (pd.Timestamp(date) - AGE_ORIGIN).days / 30.44}
+        return float(sum(self.gas_params[k] * x[k] for k in self.gas_params)) + self.conformal_shift
+
+    def recommend(self, inputs: dict, mb3_target: float | None = None, ki: float | None = None) -> pd.DataFrame:
         """inputs: date, ncv, draw_t, cullet_pct, optical_prev24h, bb_kwh_last_hour,
         mb_kwh_last_hour, mb3_now. Boost/melter last hour are kWh per hour (read from DB).
         optical_prev24h is a guard-rail: flagged when outside its historical band, not a model input."""
@@ -306,6 +365,7 @@ class FinalRecommender:
         air = float(np.clip(afr * ng, *L["sec_air"]))      # secondary air also within its own history
         afr = air / ng
         tgt = self.mb3_target if mb3_target is None else mb3_target
+        ki = self.ki if ki is None else ki
         bb_raw = inputs["bb_kwh_last_hour"] + ki * (tgt - inputs["mb3_now"]) / self.mb3_gain
         bb = float(np.clip(bb_raw, *L["bb_kwh_h"]))
         if ng_raw > L["ng_scm"][1] and bb < inputs["bb_kwh_last_hour"]:
@@ -440,3 +500,63 @@ def history_backtest(fr: "FinalRecommender", d: pd.DataFrame, q: pd.DataFrame, i
                                "barrier boost (kWh/h)", "MB3 (°C; recommended = target)"])
     return {"summary": summary, "setpoints": setp, "similar_days": sim, "rule": rule,
             "band_baseline": bb_, "recommendation": rec}
+
+
+# ----------------------------------------------------------------- live check: what was recommended vs what was done
+def compare_day(fr: "FinalRecommender", q_day: pd.DataFrame, draw_t: float, cullet_pct: float, date=None) -> dict:
+    """Compare one day's actual operation with the recommendations (for the live 'model vs actual' view).
+
+    q_day: the day's cleaned 15-min rows (index = timestamp) with ncv, ng_scm, sec_air, bb_kwh, mb_kwh
+    (kWh per 15 min) and mb3_temp; e.g. dp.clean_15min(raw=...).loc['2026-08-20'].
+    Returns
+      intervals: per 15 min, NCV, actual vs recommended NG / secondary air / AFR / gas heat
+      hours:     per hour, actual vs recommended barrier boost (open loop: each hour starts from the actual
+                 boost of the previous hour and the actual MB3, as the operator would have seen it)
+      summary:   day totals: actual vs target gas, actual SFC vs expected SFC if the recommendations had been
+                 followed, draw-adjusted % (Model A) and band baseline, and how closely NG followed the advice.
+    A partial day (live, before midnight) is scaled to 96 intervals for the daily totals.
+    """
+    q = q_day.dropna(subset=["ncv"]).copy()
+    date = pd.Timestamp(date if date is not None else q.index[0]).normalize()
+    L = fr.limits
+    scale = 96 / max(q_day["bb_kwh"].notna().sum(), 1)
+    bb_day, mb_day = q_day["bb_kwh"].sum() * scale, q_day["mb_kwh"].sum() * scale        # kWh/day, actual
+    target = fr.gas_target(date, draw_t, bb_day, mb_day)                                 # gas reads the actual boost
+    heat = target * 1e6 / 96
+    q["ng_rec"] = np.clip(heat / q["ncv"], *L["ng_scm"])
+    q["afr_rec"] = np.clip(fr.air_per_mcal * q["ncv"] / 1000, *L["afr"])
+    q["air_rec"] = np.clip(q["afr_rec"] * q["ng_rec"], *L["sec_air"])
+    q["afr_rec"] = q["air_rec"] / q["ng_rec"]
+    q["heat_actual_gcal"] = q["ng_scm"] * q["ncv"] / 1e6
+    q["heat_rec_gcal"] = q["ng_rec"] * q["ncv"] / 1e6
+    q["ng_dev_pct"] = 100 * (q["ng_scm"] / q["ng_rec"] - 1)
+    intervals = q[["ncv", "ng_scm", "ng_rec", "ng_dev_pct", "sec_air", "air_rec", "afr", "afr_rec",
+                   "heat_actual_gcal", "heat_rec_gcal"]].rename(columns={"ng_scm": "ng_actual", "sec_air": "air_actual",
+                                                                        "afr": "afr_actual"})
+    hr = q_day[["bb_kwh", "mb3_temp"]].resample("h").agg({"bb_kwh": "sum", "mb3_temp": "first"})
+    hr["bb_actual_kwh_h"] = hr["bb_kwh"]
+    hr["bb_rec_kwh_h"] = np.clip(hr["bb_kwh"].shift(1) + fr.ki * (fr.mb3_target - hr["mb3_temp"]) / fr.mb3_gain,
+                                 *L["bb_kwh_h"])
+    hours = hr[["mb3_temp", "bb_actual_kwh_h", "bb_rec_kwh_h"]]
+    bb_rec_day = hours["bb_rec_kwh_h"].fillna(hours["bb_actual_kwh_h"]).mean() * 24
+    gas_actual = (q_day["ng_scm"] * q_day["ncv"]).sum() / 1e6 * 96 / max(q_day["ng_scm"].mul(q_day["ncv"]).notna().sum(), 1)
+    e_actual = gas_actual + (bb_day + mb_day) * KCAL_PER_KWH / 1e6
+    e_rec = fr.gas_target(date, draw_t, bb_rec_day, mb_day) + (bb_rec_day + mb_day) * KCAL_PER_KWH / 1e6
+    a = fr.mv_model_a
+    e_exp = a["Intercept"] + a["draw_t"] * draw_t + a["cullet_pct"] * cullet_pct
+    band = pd.cut([draw_t], [45, 50, 55, 60, 65], labels=["45-50", "50-55", "55-60", "60-65"], include_lowest=True)[0]
+    bb_ = fr.band_baseline.get(str(band), np.nan)
+    summary = {
+        "date": str(date.date()), "intervals_with_ncv": int(len(q)), "draw_t": draw_t, "cullet_pct": cullet_pct,
+        "gas_actual_gcal": gas_actual, "gas_target_gcal": target, "gas_vs_target_pct": 100 * (gas_actual / target - 1),
+        "barrier_actual_kwh_day": bb_day, "barrier_rec_kwh_day": bb_rec_day,
+        "sfc_actual": e_actual * 1e6 / (draw_t * 1000), "sfc_if_followed": e_rec * 1e6 / (draw_t * 1000),
+        "saving_if_followed_pct": 100 * (1 - e_rec / e_actual),
+        "draw_adjusted_actual_pct": 100 * (e_actual / e_exp - 1), "draw_adjusted_if_followed_pct": 100 * (e_rec / e_exp - 1),
+        "band": None if pd.isna(band) else str(band), "band_baseline_sfc": bb_,
+        "ng_within_2pct_of_advice_share": float((q["ng_dev_pct"].abs() <= 2).mean()),
+        "ng_mean_abs_dev_pct": float(q["ng_dev_pct"].abs().mean()),
+    }
+    summary = {k: (int(v) if isinstance(v, (int, np.integer)) else float(v) if isinstance(v, (float, np.floating)) else v)
+               for k, v in summary.items()}
+    return {"summary": summary, "intervals": intervals, "hours": hours}

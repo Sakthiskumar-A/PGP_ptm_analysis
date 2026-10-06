@@ -114,6 +114,8 @@ Reduce **SFC of the 60 TPD flint melter by 2%** versus the client baseline, by g
 
 **Back-test of live inputs (T4 §6):** `rc.walk_forward_history(d, h)` replays the full recommender walk-forward on every usable day from 1 Dec 2025 (cached in `data/processed/backtest_daily.parquet`; 292 days: SFC 1,583.4 → 1,569.8, −0.86%; draw-adjusted +0.47% → −0.40%; better than actual in every month, 0.3–1.9%). `rc.history_backtest(FR, d, q, INPUTS, BT)` (wrapped as `backtest_inputs(INPUTS)` in T4) finds similar days (draw ±1.5 t, NCV ±150, cullet ±1%, widened if < 10 days) and reports actual vs recommender SFC, draw-adjusted, band, today's expected SFC (includes today's ageing) and setpoints.
 
+**Serving and retraining (developers):** `docs/08_developer_guide_backend.md`. Model file `models/recommender_latest.json` (`FinalRecommender.save/load`, numbers only); reference API `service/app.py` (FastAPI: `/recommend`, `/compare-day`, `/model`, `/admin/reload`); live comparison `rc.compare_day(model, q_day, draw_t, cullet_pct)`; daily retraining `python src/train_model.py --out models` (checks: signs, ranges, 30-day coverage 10–45%; promotes only on pass). `data_prep.clean_15min(raw=df, with_crown=False)` accepts live data; crown TC is optional everywhere. Ageing: `age_m` comes from the date; daily retrain re-fits the slope and the 45-day shift; step changes (maintenance) need an event flag or restricted window.
+
 **Model 2, boost (nb05; selection T3):** hourly integral controller on MB3: `bb(t) = bb(t-1) + 0.1 × (MB3_target − MB3) / 0.0194 °C per kWh/h`, clipped to [114, 610] kWh/h. Target = historical median MB3 (1,320.25 °C). No draw, cullet or melter-boost terms (T3 §3, §4).
 
 **Back-test results (walk-forward, daily scorecard T4; 15-min gas back-test nb04):**
@@ -220,6 +222,10 @@ data/processed/                cleaned outputs
 docs/05_final_approach_and_trial_plan.md   plant-facing: approach, evidence, path to 2%, M&V, trial phases, guard-rails
 docs/06_model_training_and_selection.md    what was trained, why the final model, both yardsticks
 docs/07_full_explanation.md                plain-language explanation of everything: concepts, data, training, how SFC drops, notebook map, glossary
+models/                        versioned model files (recommender_<date>.json, report_<date>.json, recommender_latest.json)
+service/                       reference FastAPI backend (app.py, requirements.txt)
+src/train_model.py             retraining pipeline
+docs/08_developer_guide_backend.md         developers: model I/O, math, test vectors, API, live comparison, retraining, ageing
 client/                        client deliverables: 01 insights → target, 02 training + recommender (report.py = chart helpers)
 docs/01-02                     earlier methodology and data-request notes (pre-DCS-data)
 ```

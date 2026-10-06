@@ -82,9 +82,15 @@ def load_ar_raw(old: bool = False) -> pd.DataFrame:
     return a.rename(columns=AR_COLUMNS)
 
 
-def clean_15min(with_crown: bool = True, old: bool = False) -> pd.DataFrame:
-    """One clean row per 15-min timestamp, with *_bad / quality flags."""
-    a = load_ar_raw(old)
+def clean_15min(with_crown: bool = True, old: bool = False, raw: pd.DataFrame | None = None,
+                crown_1min: pd.Series | None = None) -> pd.DataFrame:
+    """One clean row per 15-min timestamp, with *_bad / quality flags.
+
+    By default reads the analytical record Excel (AR_FILE). A live pipeline passes `raw` instead:
+    a DataFrame with the workbook's column names (AR_COLUMNS keys) or the short names (ts, bb_kwh, ...),
+    and optionally `crown_1min`, a 1-min crown thermocouple Series indexed by timestamp.
+    """
+    a = load_ar_raw(old) if raw is None else raw.rename(columns=AR_COLUMNS)
 
     # 1. Duplicate timestamps differ only in opt_temp (date swap + 12-h clock in
     #    the manual optical log, nb02) -> average it, keep the rest, flag it.
@@ -133,7 +139,8 @@ def clean_15min(with_crown: bool = True, old: bool = False) -> pd.DataFrame:
     q["elec_kcal"] = (q["bb_kwh"] + q["mb_kwh"]) * KCAL_PER_KWH
 
     if with_crown:
-        q["crown_tc"] = load_crown_tc_1min().resample("15min").mean().reindex(q.index)
+        c = load_crown_tc_1min() if crown_1min is None else crown_1min.where(crown_1min.between(*VALID_RANGE["crown_tc"]))
+        q["crown_tc"] = c.resample("15min").mean().reindex(q.index)
 
     q.index.name = "ts"
     return q
