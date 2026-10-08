@@ -1,0 +1,43 @@
+{
+  "model_version": "2026-09-29_202610060711",
+  "trained_until": "2026-09-29",
+  "passed": true,
+  "checks": [
+    {
+      "check": "usable training days >= 200",
+      "value": 343.0,
+      "result": "PASS"
+    },
+    {
+      "check": "draw coefficient > 0",
+      "value": 0.4953,
+      "result": "PASS"
+    },
+    {
+      "check": "barrier-boost coefficient between -1.2 and -0.3",
+      "value": -0.7715,
+      "result": "PASS"
+    },
+    {
+      "check": "ageing coefficient >= 0",
+      "value": 0.3498,
+      "result": "PASS"
+    },
+    {
+      "check": "MB3 gain 0.010-0.030 degC per kWh/h",
+      "value": 0.0194,
+      "result": "PASS"
+    },
+    {
+      "check": "air per Mcal 1.15-1.40",
+      "value": 1.2676,
+      "result": "PASS"
+    },
+    {
+      "check": "last 30 days: share beating the target 10-45%",
+      "value": 0.2333,
+      "result": "PASS"
+    }
+  ],
+  "walk_forward_coverage_last_30_days": 0.23333333333333334
+}

@@ -1,0 +1,8 @@
+command:
+  - python
+  - app.py
+env:
+  - name: DATABRICKS_SQL_WAREHOUSE_HTTP_PATH
+    value: "/sql/1.0/warehouses/c5b898c9dc1668ef"
+  - name: AZURE_BLOB_CONN_STR
+    valueFrom: azure-blob-secret

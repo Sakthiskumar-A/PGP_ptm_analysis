@@ -1,0 +1,28 @@
+command:
+  - python
+  - app.py
+env:
+  # SQL warehouse for the DCS view (and the optional boost query / log table)
+  - name: DATABRICKS_WAREHOUSE_ID
+    value: "c5b898c9dc1668ef"
+  - name: DCS_VIEW
+    value: "prod_pgp_mfg.cantier.vw_dcs60tpd_live"
+  # NCV: UEMS MQTT blobs (app resource "azure-blob-secret" -> secret with the connection string)
+  - name: AZURE_BLOB_CONN_STR
+    valueFrom: azure-blob-secret
+  # Recommender: the serving endpoint, added as an app resource with key "serving-endpoint" (Can query).
+  # (Fallback: set `value: ""` instead and the app loads UC_MODEL_NAME@MODEL_ALIAS itself.)
+  - name: SERVING_ENDPOINT
+    valueFrom: serving-endpoint
+  - name: UC_MODEL_NAME
+    value: "prod_pgp_mfg.cantier.sfc_60tpd_recommender"
+  - name: MODEL_ALIAS
+    value: "champion"
+  # Optional: SQL returning one row (ts, bb_kwh_last_hour, mb_kwh_last_hour); empty = operator types them
+  - name: BOOST_QUERY
+    value: ""
+  # Audit table (Delta): recommendations + operator set points. Created on first write if missing.
+  - name: AUDIT_TABLE
+    value: "prod_pgp_mfg.cantier.sfc_60tpd_setpoint_audit"
+  - name: REFRESH_SECONDS
+    value: "60"

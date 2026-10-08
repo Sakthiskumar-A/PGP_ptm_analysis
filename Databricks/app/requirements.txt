@@ -1,0 +1,8 @@
+dash>=2.14
+plotly>=5.18
+pandas>=2.0
+numpy
+databricks-sdk>=0.30
+azure-storage-blob
+# only needed while the app loads the model by alias (no SERVING_ENDPOINT yet)
+mlflow-skinny>=2.16

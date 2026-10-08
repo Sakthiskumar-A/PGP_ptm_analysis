@@ -1,0 +1,7 @@
+command:
+  - python
+  - app.py
+env:
+  # Demo only: no warehouse, endpoint or secrets. Data and model are files in this folder.
+  - name: DEMO_TIME
+    value: "2026-08-19 10:00"      # demo time shown when the page opens (any time in the Excel record)

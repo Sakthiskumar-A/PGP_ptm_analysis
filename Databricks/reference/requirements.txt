@@ -1,0 +1,4 @@
+dash>=2.14
+pandas
+databricks-sdk
+azure-storage-blob
